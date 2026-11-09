@@ -1,5 +1,6 @@
 // Turns pasted text or Markdown into short, speakable chunks for Kokoro.
-// Kokoro truncates anything past ~510 phoneme tokens, so chunks stay well under that.
+// Kokoro truncates anything past ~510 phoneme tokens, and its memory use grows with the length
+// of each piece (about 380 MB at 180 characters), so pieces stay short. Total length doesn't matter.
 
 const TERMINAL = /[.!?:;…]["'”’)\]]*$/;
 const endWithPunctuation = (s) => (TERMINAL.test(s) ? s : s + ".");
@@ -109,7 +110,7 @@ function splitLong(sentence, max) {
  * Build generation chunks. Each chunk is a few sentences from one paragraph;
  * pauseAfter adds a short silence so paragraph breaks are audible.
  */
-export function makeChunks(paragraphs, max = 300) {
+export function makeChunks(paragraphs, max = 180) {
   const chunks = [];
   for (const p of paragraphs) {
     const sentences = splitAfter(p, SENTENCE_END).flatMap((s) => splitLong(s, max));
@@ -120,7 +121,7 @@ export function makeChunks(paragraphs, max = 300) {
 }
 
 export function chunkText(src, opts = {}) {
-  return makeChunks(toParagraphs(src, opts), opts.max || 300);
+  return makeChunks(toParagraphs(src, opts), opts.max || 180);
 }
 
 /** Small stable hash so we can tell when text changed and audio is stale. */

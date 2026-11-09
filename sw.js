@@ -1,6 +1,6 @@
 // Makes the app open offline. The voice model itself is cached by the speech library.
-const VERSION = "reader-v2";
-const SHELL = ["./", "index.html", "app.js", "text.js", "worker-core.js", "engines/ort121.js", "diag.html", "manifest.webmanifest",
+const VERSION = "reader-v3";
+const SHELL = ["./", "index.html", "app.js", "text.js", "worker-core.js", "engines/lite.js", "diag.html", "manifest.webmanifest",
   "icons/icon-192.png", "icons/icon-512.png", "icons/apple-touch-icon.png"];
 
 self.addEventListener("install", (e) => {

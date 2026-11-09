@@ -39,14 +39,13 @@ After a minute or two, the app is live at `https://<your-username>.github.io/kok
 
 ## Speech engines
 
-iPhone Safari can't run every build of the ONNX runtime that Kokoro uses, so the app ships four, and you can pick one in Settings:
+iPhone Safari gives web pages limited memory, and the standard ONNX runtime reserves up to 4 GB, which makes Safari kill the page. The default **Low memory** engine (`engines/lite.js`) avoids that:
 
-- **Standard A** (default): ONNX Runtime 1.21, on the CPU.
-- **Standard B**: ONNX Runtime 1.31, on the CPU.
-- **Standard C**: ONNX Runtime 1.22, the original build. It works on computers but may hang on iPhone.
-- **Fast (GPU)**: ONNX Runtime 1.31 with WebGPU. It downloads about 330 MB.
+- ONNX Runtime 1.21, CPU-only build (`engines/ort121/`), with its memory capped at 1 GB.
+- Lighter model setup (basic graph optimization, no memory arena).
+- Text is read in pieces of at most 180 characters, which keeps the engine at about 350 MB. Memory doesn't grow with document length, so long documents are fine.
 
-Open `diag.html` (Settings → **Test which engines work on this phone**) to try each one on your device.
+Other engines are in Settings, and `diag.html` (Settings → **Test which engines work on this phone**) tries each one on the device.
 
 The bundles in `engines/` are built from `kokoro-js` 1.2.1 with `@huggingface/transformers` 3.3.3 or 4.3.2 using esbuild.
 
@@ -58,6 +57,6 @@ The bundles in `engines/` are built from `kokoro-js` 1.2.1 with `@huggingface/tr
 | `app.js` | Library, editor, player and storage (IndexedDB) |
 | `text.js` | Markdown cleanup and splitting text into parts Kokoro can read |
 | `worker-core.js` | Speech-engine logic shared by the files in `engines/` |
-| `engines/` | Kokoro bundled with different ONNX runtime versions |
+| `engines/` | Kokoro bundled with different ONNX runtime versions; `engines/ort121/` is the patched low-memory runtime |
 | `diag.html` | Engine test page |
 | `sw.js` | Lets the app open offline |

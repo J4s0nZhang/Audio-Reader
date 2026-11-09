@@ -104,7 +104,14 @@ async function tx(store, mode, fn) {
   });
 }
 const reqP = (r) => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
-const getDoc = (id) => tx("docs", "readonly", (s) => reqP(s.get(id)));
+const getDocRaw = (id) => tx("docs", "readonly", (s) => reqP(s.get(id)));
+// While audio is being made, progress lives in memory (job.gen) and is saved every few seconds,
+// so reads overlay the live progress.
+async function getDoc(id) {
+  const d = await getDocRaw(id);
+  if (d && job && job.docId === id && job.gen && d.gen && d.gen.key === job.gen.key) d.gen = { ...job.gen };
+  return d;
+}
 const putDoc = (doc) => tx("docs", "readwrite", (s) => { s.put(doc); });
 const allDocs = async () => (await tx("docs", "readonly", (s) => reqP(s.getAll()))).sort((a, b) => b.updatedAt - a.updatedAt);
 const putChunk = (rec) => tx("chunks", "readwrite", (s) => { s.put(rec); });
@@ -141,12 +148,13 @@ const SILENT_URL = URL.createObjectURL(new Blob([wavHeader(2400, 24000), new Arr
 // iPhone Safari can't run every build of the ONNX runtime, so there are a few to choose from.
 // diag.html tests them on the phone.
 export const ENGINES = {
-  ort121: { file: "engines/ort121.js", device: "wasm", name: "Standard A", note: "ONNX Runtime 1.21, runs on the CPU. Downloads about 90 MB once." },
-  ort131: { file: "engines/ort131.js", device: "wasm", name: "Standard B", note: "ONNX Runtime 1.31, runs on the CPU. Downloads about 90 MB once." },
-  ort122: { file: "engines/ort122.js", device: "wasm", name: "Standard C", note: "ONNX Runtime 1.22, the original build. Works on computers; may hang on iPhone." },
+  lite: { file: "engines/lite.js", device: "wasm", name: "Low memory", note: "Built for iPhones: ONNX Runtime 1.21 on the CPU with a 1 GB memory cap. Downloads about 100 MB once." },
+  ort121: { file: "engines/ort121.js", device: "wasm", name: "Standard A", note: "ONNX Runtime 1.21 on the CPU." },
+  ort131: { file: "engines/ort131.js", device: "wasm", name: "Standard B", note: "ONNX Runtime 1.31 on the CPU." },
+  ort122: { file: "engines/ort122.js", device: "wasm", name: "Standard C", note: "ONNX Runtime 1.22, the original build. Works on computers; crashes on some iPhones." },
   ort131gpu: { file: "engines/ort131gpu.js", device: "webgpu", name: "Fast (GPU)", note: "Uses the graphics chip. Downloads about 330 MB once and needs more memory." },
 };
-const DEFAULT_ENGINE = "ort121";
+const DEFAULT_ENGINE = "lite";
 const model = { status: "idle", engine: null, phase: null, loaded: 0, total: 0, error: null };
 let worker = null;
 let loadWaiters = [];
@@ -288,10 +296,12 @@ async function startGeneration(docId, { restart = false } = {}) {
     doc.position = 0;
     await putDoc(doc);
   }
+  else doc = await reconcileProgress(doc);
   if (doc.gen.done >= doc.gen.total) { refresh(); return; }
   const remaining = doc.chunks.slice(doc.gen.done);
+  const allChunks = doc.chunks;
   job = {
-    jobId: Date.now(), docId: doc.id, genMs: 0, audioSec: 0, charsDone: 0,
+    jobId: Date.now(), docId: doc.id, genMs: 0, audioSec: 0, charsDone: 0, gen: { ...doc.gen }, lastSave: Date.now(), chunks: allChunks,
     charsTotal: remaining.reduce((n, c) => n + c.text.length, 0),
   };
   acquireWakeLock();
@@ -306,6 +316,8 @@ async function startGeneration(docId, { restart = false } = {}) {
 function stopGeneration() {
   if (!job) return;
   worker?.postMessage({ type: "cancel", jobId: job.jobId });
+  const { docId, gen } = job;
+  writeQueue = writeQueue.then(() => saveProgress(docId, gen)).then(() => refresh()).catch(() => {});
   job = null;
   releaseWakeLock();
   refresh();
@@ -314,20 +326,24 @@ function stopGeneration() {
 function onChunk(m) {
   writeQueue = writeQueue.then(async () => {
     if (!job || m.jobId !== job.jobId) return;
-    const doc = await getDoc(job.docId);
-    if (!doc || !doc.gen) return;
-    const c = doc.chunks[m.i];
+    const docId = job.docId;
+    if (!job.chunks) job.chunks = (await getDocRaw(docId))?.chunks || [];
+    const c = job.chunks[m.i];
     const pcm = toInt16(m.samples, Math.round(m.rate * (c?.pauseAfter || 0)));
-    await putChunk({ key: doc.id + ":" + m.i, docId: doc.id, i: m.i, pcm: pcm.buffer, samples: pcm.length });
-    doc.gen.done = m.i + 1;
-    doc.gen.samples += pcm.length;
-    doc.gen.rate = m.rate;
-    await putDoc(doc);
+    // Stored as a Blob so the browser can keep it on disk instead of in memory.
+    await putChunk({ key: docId + ":" + m.i, docId, i: m.i, pcm: new Blob([pcm.buffer]), samples: pcm.length });
+    if (!job || job.jobId !== m.jobId) return;
+    job.gen.done = m.i + 1;
+    job.gen.samples += pcm.length;
+    job.gen.rate = m.rate;
+    if (Date.now() - job.lastSave > 10000) { job.lastSave = Date.now(); await saveProgress(docId, job.gen); }
+    const doc = await getDoc(docId);
     if (job && job.jobId === m.jobId) {
       job.genMs += m.ms;
       job.audioSec += m.samples.length / m.rate;
       job.charsDone += c ? c.text.length : 0;
       if (m.skipped) job.skipped = (job.skipped || 0) + 1;
+      if (m.mem) job.mem = m.mem;
     }
     if (model.status !== "ready") { model.status = "ready"; model.engine = currentEngine(); }
     if (playerState.waiting && playerState.docId === doc.id) resumeAfterWait(doc);
@@ -343,6 +359,7 @@ function onChunk(m) {
 function onJobDone(m) {
   writeQueue = writeQueue.then(async () => {
     if (!job || m.jobId !== job.jobId) return;
+    await saveProgress(job.docId, job.gen);
     const doc = await getDoc(job.docId);
     const skipped = job.skipped || 0;
     job = null;
@@ -352,6 +369,25 @@ function onJobDone(m) {
     }
     refresh();
   });
+}
+
+/** Write in-memory progress to the saved document (only if it's still for the same text and voice). */
+async function saveProgress(docId, gen) {
+  const d = await getDocRaw(docId);
+  if (d && d.gen && d.gen.key === gen.key) { d.gen = { ...gen }; await putDoc(d); }
+}
+
+/** After a crash or reload, work out progress from the audio that was actually saved. */
+async function reconcileProgress(doc) {
+  if (!doc.gen) return doc;
+  const chunks = await getChunks(doc.id);
+  let done = 0, samples = 0;
+  for (; done < chunks.length && chunks[done].i === done; done++) samples += chunks[done].samples;
+  if (done !== doc.gen.done || samples !== doc.gen.samples) {
+    doc.gen.done = done; doc.gen.samples = samples;
+    await putDoc(doc);
+  }
+  return doc;
 }
 
 let wakeLock = null;
@@ -651,8 +687,11 @@ async function saveNewDoc(title, text, markdown) {
 }
 
 async function viewDoc(id) {
-  const doc = await peekDoc(id);
+  let doc = await peekDoc(id);
   if (!doc) { location.replace("#/"); return; }
+  if (!(job && job.docId === id) && doc.gen && doc.gen.done < doc.gen.total && audioIsCurrent(doc)) {
+    doc = await reconcileProgress(doc); docCache.set(id, doc);
+  }
   const w = wordCount(doc.text);
   app.innerHTML = header("",
     `<button class="navbtn" data-go="#/">${ICON.back} Library</button>`,

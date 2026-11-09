@@ -34,7 +34,7 @@ export function startWorker({ KokoroTTS, configure, name }) {
           }
         },
       });
-      postMessage({ type: "phase", phase: "ready", engine: name });
+      postMessage({ type: "phase", phase: "ready", engine: name, mem: globalThis.__ortMem?.buffer.byteLength });
       tts = model;
       loadedKey = key;
       return model;
@@ -65,7 +65,7 @@ export function startWorker({ KokoroTTS, configure, name }) {
         await load(msg.device);
         const t0 = performance.now();
         const { samples, rate } = await synth(msg.text, msg.voice, msg.speed);
-        postMessage({ type: "preview", id: msg.id, samples, rate, ms: performance.now() - t0 }, [samples.buffer]);
+        postMessage({ type: "preview", id: msg.id, samples, rate, ms: performance.now() - t0, mem: globalThis.__ortMem?.buffer.byteLength }, [samples.buffer]);
       } else if (msg.type === "generate") {
         await load(msg.device);
         let skippedInARow = 0;
@@ -89,7 +89,7 @@ export function startWorker({ KokoroTTS, configure, name }) {
           if (!skipped) skippedInARow = 0;
           if (cancelled.has(msg.jobId)) break;
           postMessage(
-            { type: "chunk", jobId: msg.jobId, i: chunk.i, samples: out.samples, rate: out.rate, skipped, ms: performance.now() - t0 },
+            { type: "chunk", jobId: msg.jobId, i: chunk.i, samples: out.samples, rate: out.rate, skipped, ms: performance.now() - t0, mem: globalThis.__ortMem?.buffer.byteLength },
             [out.samples.buffer],
           );
         }

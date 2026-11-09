@@ -27,7 +27,7 @@
 <body>
 <div class="wrap">
   <h1>Engine test</h1>
-  <p class="muted small">This tries each version of the speech engine on this phone and reports which ones work. Test them one at a time on Wi-Fi with the screen on. Each first test downloads about 90 MB (the model is shared, so later tests are faster).</p>
+  <p class="muted small"><strong>Start with L.</strong> This tries each version of the speech engine on this phone and reports which ones work. Test them one at a time on Wi-Fi with the screen on. Each first test downloads about 90 MB (the model is shared, so later tests are faster).</p>
   <div class="card small muted" id="device"></div>
   <div id="engines"></div>
   <div class="card">
@@ -39,6 +39,7 @@
 </div>
 <script type="module">
 const ENGINES = [
+  { id: "lite", file: "engines/lite.js", device: "wasm", label: "L · Low memory (for iPhone)" },
   { id: "ort121", file: "engines/ort121.js", device: "wasm", label: "A · ONNX Runtime 1.21 (CPU)" },
   { id: "ort131", file: "engines/ort131.js", device: "wasm", label: "B · ONNX Runtime 1.31 (CPU)" },
   { id: "ort131gpu", file: "engines/ort131gpu.js", device: "webgpu", label: "C · ONNX Runtime 1.31 (GPU)" },
@@ -122,7 +123,7 @@ function run(id) {
       const pcm = new Int16Array(m.samples.length);
       for (let i = 0; i < pcm.length; i++) pcm[i] = Math.max(-1, Math.min(1, m.samples[i])) * 32767;
       const dur = m.samples.length / m.rate;
-      log(`made ${dur.toFixed(1)}s of speech in ${(m.ms / 1000).toFixed(1)}s`);
+      log(`made ${dur.toFixed(1)}s of speech in ${(m.ms / 1000).toFixed(1)}s${m.mem ? ` · engine memory ${Math.round(m.mem / 1048576)} MB` : ""}`);
       au.src = URL.createObjectURL(new Blob([wav(pcm, m.rate)], { type: "audio/wav" }));
       au.play().catch(() => {});
       finish("ok", { detail: `${(dur / (m.ms / 1000)).toFixed(2)}x real time, total ${sec()}` });
@@ -138,7 +139,7 @@ function run(id) {
     if (quiet > limit) { log(`no response for ${Math.round(quiet)}s during "${phase}"`); finish("failed", { error: `stopped responding during ${phase}` }); }
   }, 2000);
   worker.postMessage({ type: "preview", id: 1, device: eng.device, engine: id, voice: "af_heart", speed: 1,
-    text: "Hi! If you can hear this, this engine works on your phone." });
+    text: "Hi! If you can hear this, this engine works on your phone. This sentence is about as long as the longest piece the app reads at once." });
 }
 render();
 </script>
