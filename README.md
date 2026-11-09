@@ -37,10 +37,18 @@ After a minute or two, the app is live at `https://<your-username>.github.io/kok
 2. Tap **Share → Add to Home Screen** to use it like an app. The Home Screen app keeps its own library, separate from Safari.
 3. Keep the screen on while audio is being made. Playback works with the screen locked.
 
-## Settings
+## Speech engines
 
-- **Standard engine** (default): runs on the CPU and works on any recent iPhone.
-- **Fast engine (WebGPU)**: uses the graphics chip. It's often much faster, but it downloads about 330 MB and uses more memory. If it fails, the app switches back to Standard automatically.
+iPhone Safari can't run every build of the ONNX runtime that Kokoro uses, so the app ships four, and you can pick one in Settings:
+
+- **Standard A** (default): ONNX Runtime 1.21, on the CPU.
+- **Standard B**: ONNX Runtime 1.31, on the CPU.
+- **Standard C**: ONNX Runtime 1.22, the original build. It works on computers but may hang on iPhone.
+- **Fast (GPU)**: ONNX Runtime 1.31 with WebGPU. It downloads about 330 MB.
+
+Open `diag.html` (Settings → **Test which engines work on this phone**) to try each one on your device.
+
+The bundles in `engines/` are built from `kokoro-js` 1.2.1 with `@huggingface/transformers` 3.3.3 or 4.3.2 using esbuild.
 
 ## Files
 
@@ -49,5 +57,7 @@ After a minute or two, the app is live at `https://<your-username>.github.io/kok
 | `index.html` | Page layout and styles |
 | `app.js` | Library, editor, player and storage (IndexedDB) |
 | `text.js` | Markdown cleanup and splitting text into parts Kokoro can read |
-| `worker.js` | Runs Kokoro (via `kokoro-js` 1.2.1) in a background thread |
+| `worker-core.js` | Speech-engine logic shared by the files in `engines/` |
+| `engines/` | Kokoro bundled with different ONNX runtime versions |
+| `diag.html` | Engine test page |
 | `sw.js` | Lets the app open offline |

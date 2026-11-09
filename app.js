@@ -138,22 +138,45 @@ function toInt16(f32, padSamples = 0) {
 const SILENT_URL = URL.createObjectURL(new Blob([wavHeader(2400, 24000), new ArrayBuffer(4800)], { type: "audio/wav" }));
 
 // ---------- the speech engine (web worker) ----------
-const model = { status: "idle", engine: null, loaded: 0, total: 0, error: null };
+// iPhone Safari can't run every build of the ONNX runtime, so there are a few to choose from.
+// diag.html tests them on the phone.
+export const ENGINES = {
+  ort121: { file: "engines/ort121.js", device: "wasm", name: "Standard A", note: "ONNX Runtime 1.21, runs on the CPU. Downloads about 90 MB once." },
+  ort131: { file: "engines/ort131.js", device: "wasm", name: "Standard B", note: "ONNX Runtime 1.31, runs on the CPU. Downloads about 90 MB once." },
+  ort122: { file: "engines/ort122.js", device: "wasm", name: "Standard C", note: "ONNX Runtime 1.22, the original build. Works on computers; may hang on iPhone." },
+  ort131gpu: { file: "engines/ort131gpu.js", device: "webgpu", name: "Fast (GPU)", note: "Uses the graphics chip. Downloads about 330 MB once and needs more memory." },
+};
+const DEFAULT_ENGINE = "ort121";
+const model = { status: "idle", engine: null, phase: null, loaded: 0, total: 0, error: null };
 let worker = null;
 let loadWaiters = [];
 const previewWaiters = new Map();
+let lastBeat = 0;
 
-function currentEngine() { return settings.get("engine", "wasm"); }
+function currentEngine() {
+  const e = settings.get("engine", DEFAULT_ENGINE);
+  return ENGINES[e] ? e : DEFAULT_ENGINE;
+}
+const engineDevice = () => ENGINES[currentEngine()].device;
 
 function createWorker() {
   if (worker) worker.terminate();
-  worker = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
-  model.status = "idle"; model.engine = null;
-  worker.onmessage = (e) => onWorkerMessage(e.data);
+  const engine = currentEngine();
+  worker = new Worker(new URL("./" + ENGINES[engine].file, import.meta.url), { type: "module" });
+  worker.engine = engine;
+  Object.assign(model, { status: "idle", engine: null, phase: null, loaded: 0, total: 0 });
+  worker.onmessage = (e) => { lastBeat = Date.now(); onWorkerMessage(e.data); };
   worker.onerror = (e) => {
     e.preventDefault?.();
     failEverything("Couldn't start the speech engine. Check your internet connection and reload.");
   };
+}
+
+/** Post to the engine, restarting it first if the chosen engine changed. */
+function send(msg) {
+  if (!worker || worker.engine !== currentEngine()) createWorker();
+  lastBeat = Date.now();
+  worker.postMessage({ ...msg, engine: currentEngine(), device: engineDevice() });
 }
 
 function failEverything(message) {
@@ -161,31 +184,60 @@ function failEverything(message) {
   loadWaiters.forEach((w) => w.reject(new Error(message))); loadWaiters = [];
   previewWaiters.forEach((w) => w.reject(new Error(message))); previewWaiters.clear();
   if (job) { job = null; releaseWakeLock(); }
-  toast(message, 6000);
+  toast(message, 8000);
   refresh();
 }
 
+// Safari kills a worker that runs out of memory without reporting an error, so watch for silence.
+setInterval(() => {
+  const busy = model.status === "loading" || previewWaiters.size > 0 || (job && job.charsDone === 0);
+  if (!busy || !worker || document.visibilityState !== "visible") { lastBeat = Date.now(); return; }
+  const quiet = (Date.now() - lastBeat) / 1000;
+  const limit = model.phase === "download" ? 90 : 150;
+  if (quiet > limit) {
+    createWorker();
+    failEverything(`The speech engine stopped responding. This phone may not be able to run “${ENGINES[currentEngine()].name}”. Try another engine in Settings.`);
+  }
+}, 3000);
+document.addEventListener("visibilitychange", () => { lastBeat = Date.now(); });
+
 function ensureModel() {
   const engine = currentEngine();
-  if (model.status === "ready" && model.engine === engine) return Promise.resolve();
+  if (model.status === "ready" && model.engine === engine && worker?.engine === engine) return Promise.resolve();
   return new Promise((resolve, reject) => {
     loadWaiters.push({ resolve, reject });
     if (model.status !== "loading" || model.engine !== engine) {
-      model.status = "loading"; model.engine = engine; model.loaded = 0; model.total = 0; model.error = null;
-      worker.postMessage({ type: "load", engine });
+      if (!worker || worker.engine !== engine) createWorker();
+      Object.assign(model, { status: "loading", engine, phase: "download", loaded: 0, total: 0, error: null });
+      send({ type: "load" });
       refresh();
     }
   });
 }
 
+/** Human-readable engine status for buttons and progress lines. */
+function loadingText() {
+  if (model.phase === "init") return "Starting the speech engine…";
+  if (model.loaded > 0) {
+    const total = model.total > model.loaded ? model.total : 92 * 1048576;
+    return `Downloading voice model: ${fmtMB(model.loaded)} of ${model.total > model.loaded ? "" : "about "}${fmtMB(total)}`;
+  }
+  return "Loading the speech engine…";
+}
+
 function onWorkerMessage(m) {
   switch (m.type) {
+    case "phase":
+      if (m.phase === "download" || m.phase === "init") { model.phase = m.phase; if (model.status !== "ready") model.status = "loading"; }
+      if (m.phase === "ready") { model.phase = "ready"; }
+      updateLive(); updatePreviewButton();
+      break;
     case "load-progress":
       model.loaded = m.loaded; model.total = m.total;
-      updateLive();
+      updateLive(); updatePreviewButton();
       break;
     case "loaded":
-      model.status = "ready"; model.engine = m.engine;
+      model.status = "ready"; model.engine = m.engine; model.phase = "ready";
       loadWaiters.forEach((w) => w.resolve()); loadWaiters = [];
       refresh();
       break;
@@ -203,20 +255,15 @@ function onWorkerMessage(m) {
 
 function onWorkerError(m) {
   console.error("Speech engine error: " + JSON.stringify(m));
-  if (m.engine === "webgpu" && model.status !== "ready") {
-    settings.set("engine", "wasm");
-    createWorker();
-    failEverything("Fast mode (WebGPU) didn't work on this device, so I switched to Standard. Tap again to retry.");
-    return;
-  }
   if (m.during === "preview") {
     const w = previewWaiters.get(m.id); previewWaiters.delete(m.id); w?.reject(new Error(m.message));
+    if (model.status !== "ready") { model.status = "error"; model.error = m.message; }
     return;
   }
-  if (m.during === "load") { failEverything("Couldn't load the voice model: " + m.message); return; }
+  if (m.during === "load") { failEverything("Couldn't load the voice model: " + m.message + " Try another engine in Settings."); return; }
   if (job && (m.jobId === job.jobId || m.during === "generate")) {
     job = null; releaseWakeLock();
-    toast("Audio generation stopped: " + m.message, 6000);
+    toast("Audio generation stopped: " + m.message, 8000);
     refresh();
   }
 }
@@ -250,15 +297,15 @@ async function startGeneration(docId, { restart = false } = {}) {
   acquireWakeLock();
   refresh();
   ensureModel().catch(() => {}); // for the download progress display
-  worker.postMessage({
-    type: "generate", jobId: job.jobId, engine: currentEngine(), voice: doc.voice, speed: doc.speed,
+  send({
+    type: "generate", jobId: job.jobId, voice: doc.voice, speed: doc.speed,
     chunks: remaining.map((c, k) => ({ i: doc.gen.done + k, text: c.text })),
   });
 }
 
 function stopGeneration() {
   if (!job) return;
-  worker.postMessage({ type: "cancel", jobId: job.jobId });
+  worker?.postMessage({ type: "cancel", jobId: job.jobId });
   job = null;
   releaseWakeLock();
   refresh();
@@ -287,7 +334,7 @@ function onChunk(m) {
     updateLive(doc);
   }).catch((err) => {
     console.error(err);
-    if (job) { worker.postMessage({ type: "cancel", jobId: job.jobId }); job = null; releaseWakeLock(); }
+    if (job) { worker?.postMessage({ type: "cancel", jobId: job.jobId }); job = null; releaseWakeLock(); }
     toast("Couldn't save audio. Your phone may be low on storage.", 6000);
     refresh();
   });
@@ -453,13 +500,13 @@ async function setMediaSession() {
 async function preview(voice, speed) {
   previewPlayer.src = SILENT_URL;
   previewPlayer.play().catch(() => {});
-  const btn = $("#previewBtn");
-  if (btn) { btn.disabled = true; btn.textContent = model.status === "ready" ? "Making sample…" : "Loading voices…"; }
+  previewing = true;
+  updatePreviewButton();
   try {
     const id = uid();
     const p = new Promise((resolve, reject) => previewWaiters.set(id, { resolve, reject }));
     ensureModel().catch(() => {});
-    worker.postMessage({ type: "preview", id, voice, speed, engine: currentEngine(),
+    send({ type: "preview", id, voice, speed,
       text: `Hi, I'm ${voiceName(voice)}. I'll read your documents to you, so you can listen on the go.` });
     const m = await p;
     const pcm = toInt16(m.samples);
@@ -469,9 +516,19 @@ async function preview(voice, speed) {
   } catch (e) {
     toast("Couldn't play the sample: " + e.message);
   } finally {
-    const b = $("#previewBtn");
-    if (b) { b.disabled = false; b.innerHTML = ICON.speaker + " Sample"; }
+    previewing = false;
+    updatePreviewButton();
   }
+}
+
+let previewing = false;
+function updatePreviewButton() {
+  const b = $("#previewBtn"), st = $("#engineStatus");
+  if (b) {
+    b.disabled = previewing;
+    b.innerHTML = previewing ? (model.status === "ready" ? "Making…" : "Loading…") : ICON.speaker + " Sample";
+  }
+  if (st) st.textContent = previewing && model.status !== "ready" ? loadingText() + " (first time only)" : "";
 }
 
 function shareAudio(doc) {
@@ -606,7 +663,8 @@ async function viewDoc(id) {
       <div class="card stack">
         <div><label class="field" for="voice">Voice</label>
           <div class="row"><select id="voice">${VOICES.map((v) => `<option value="${v[0]}" ${v[0] === doc.voice ? "selected" : ""}>${v[1]}${v[2] ? " · " + v[2] : ""}</option>`).join("")}</select>
-          <button class="btn" id="previewBtn" style="flex:none">${ICON.speaker} Sample</button></div></div>
+          <button class="btn" id="previewBtn" style="flex:none;min-width:112px">${ICON.speaker} Sample</button></div>
+          <div class="muted small" id="engineStatus" style="margin-top:6px"></div></div>
         <div><label class="field" for="speed">Reading speed</label>
           <select id="speed">${SPEEDS.map((s) => `<option value="${s}" ${s === doc.speed ? "selected" : ""}>${s === 1 ? "Normal" : s + "×"}</option>`).join("")}</select></div>
       </div>
@@ -679,10 +737,8 @@ function genCardHTML(doc) {
   const pct = g && current ? (100 * g.done) / g.total : 0;
   if (running) {
     let line;
-    if (job.charsDone === 0 && model.status === "loading" && model.total > 0 && model.loaded < model.total) {
-      line = `Downloading the voice model: ${fmtMB(model.loaded)} of ${fmtMB(model.total)} (first time only)`;
-    } else if (job.charsDone === 0) {
-      line = model.status === "loading" ? "Loading the voice model…" : "Starting…";
+    if (job.charsDone === 0) {
+      line = model.status === "ready" ? "Starting…" : loadingText() + (model.loaded ? " (first time only)" : "");
     } else {
       const leftSec = ((job.charsTotal - job.charsDone) * (job.genMs / job.charsDone)) / 1000;
       line = `Part ${g.done} of ${g.total} · ${leftSec < 60 ? "under a minute" : "about " + Math.ceil(leftSec / 60) + " min"} left`;
@@ -762,11 +818,10 @@ async function viewSettings() {
       <div class="card stack">
         <strong>Speech engine</strong>
         <div class="seg">
-          <label><input type="radio" name="engine" value="wasm" ${engine === "wasm" ? "checked" : ""}>
-            <div><div>Standard</div><div class="muted small">Works on any recent iPhone. Downloads about 90 MB once.</div></div></label>
-          <label><input type="radio" name="engine" value="webgpu" ${engine === "webgpu" ? "checked" : ""} ${hasGPU ? "" : "disabled"}>
-            <div><div>Fast (WebGPU)</div><div class="muted small">${hasGPU ? "Uses the graphics chip, often several times faster. Downloads about 330 MB once and uses more memory." : "Not available in this browser."}</div></div></label>
+          ${Object.entries(ENGINES).map(([id, e]) => `<label><input type="radio" name="engine" value="${id}" ${engine === id ? "checked" : ""} ${e.device === "webgpu" && !hasGPU ? "disabled" : ""}>
+            <div><div>${esc(e.name)}${id === DEFAULT_ENGINE ? ' <span class="muted small">(default)</span>' : ""}</div><div class="muted small">${esc(e.note)}</div></div></label>`).join("")}
         </div>
+        <a class="btn ghost block" href="diag.html" style="text-decoration:none">Test which engines work on this phone</a>
         <div class="muted small">Engine status: ${esc(model.status === "ready" ? "loaded" : model.status === "loading" ? "loading…" : model.status === "error" ? "error" : "not loaded yet")}</div>
       </div>
       <div class="card stack">
@@ -785,7 +840,7 @@ async function viewSettings() {
     if (job) { toast("Stop the current audio job first."); r.checked = false; $(`input[value="${engine}"]`).checked = true; return; }
     settings.set("engine", r.value);
     createWorker();
-    toast(r.value === "webgpu" ? "Fast mode on. The next audio job loads it." : "Standard mode on.");
+    toast(`Switched to ${ENGINES[r.value].name}. It loads the next time you make audio.`);
   }));
   $("#clearAudio").onclick = async () => {
     if (!confirm("Delete the audio for every document? Your text stays.")) return;

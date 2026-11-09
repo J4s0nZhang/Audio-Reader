@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Reader – engine test</title>
+  <style>
+    :root { --bg:#f5f3ef; --card:#fff; --ink:#1d1b19; --muted:#6f6a64; --line:#e4e0da; --accent:#c2410c; --ok:#2f7d4f; --bad:#b42318; }
+    @media (prefers-color-scheme: dark) { :root { --bg:#151413; --card:#211f1d; --ink:#f2efeb; --muted:#a39d96; --line:#34312e; --accent:#f0743a; --ok:#6cc08b; --bad:#f97066; } }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.45 -apple-system, system-ui, sans-serif;
+      padding: calc(12px + env(safe-area-inset-top)) 16px calc(24px + env(safe-area-inset-bottom)); }
+    .wrap { max-width:620px; margin:0 auto; }
+    h1 { font-size:26px; margin:6px 0 4px; }
+    .muted { color:var(--muted); } .small { font-size:14px; }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:14px; margin:12px 0; }
+    .row { display:flex; gap:10px; align-items:center; }
+    .spacer { flex:1; }
+    button { font:inherit; font-weight:600; border:0; border-radius:12px; padding:11px 16px; background:var(--accent); color:#fff; min-height:44px; }
+    button.ghost { background:transparent; color:var(--ink); border:1px solid var(--line); }
+    button:disabled { opacity:.45; }
+    .log { font: 13px/1.5 ui-monospace, Menlo, monospace; white-space:pre-wrap; color:var(--muted); margin-top:8px; }
+    .ok { color:var(--ok); font-weight:700; } .bad { color:var(--bad); font-weight:700; }
+    a { color:var(--accent); }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Engine test</h1>
+  <p class="muted small">This tries each version of the speech engine on this phone and reports which ones work. Test them one at a time on Wi-Fi with the screen on. Each first test downloads about 90 MB (the model is shared, so later tests are faster).</p>
+  <div class="card small muted" id="device"></div>
+  <div id="engines"></div>
+  <div class="card">
+    <div class="row"><strong>Results</strong><span class="spacer"></span><button class="ghost" id="copy">Copy results</button></div>
+    <div class="log" id="summary">No tests run yet.</div>
+  </div>
+  <p class="small"><a href="./">← Back to Reader</a></p>
+  <audio id="au" playsinline></audio>
+</div>
+<script type="module">
+const ENGINES = [
+  { id: "ort121", file: "engines/ort121.js", device: "wasm", label: "A · ONNX Runtime 1.21 (CPU)" },
+  { id: "ort131", file: "engines/ort131.js", device: "wasm", label: "B · ONNX Runtime 1.31 (CPU)" },
+  { id: "ort131gpu", file: "engines/ort131gpu.js", device: "webgpu", label: "C · ONNX Runtime 1.31 (GPU)" },
+  { id: "ort122", file: "engines/ort122.js", device: "wasm", label: "D · ONNX Runtime 1.22 (CPU, current)" },
+];
+const $ = (s) => document.querySelector(s);
+const KEY = "kr:diag";
+const load = () => { try { return JSON.parse(localStorage.getItem(KEY)) || {}; } catch { return {}; } };
+const save = (r) => { try { localStorage.setItem(KEY, JSON.stringify(r)); } catch {} };
+let results = load();
+
+// A test that was running when the page died means Safari crashed it.
+for (const [id, r] of Object.entries(results)) {
+  if (r.status === "running") { r.status = "crashed"; r.note = "The page reloaded during this test (Safari ran out of memory)."; }
+}
+save(results);
+
+const ua = navigator.userAgent;
+const ios = (ua.match(/OS (\d+)_(\d+)/) || []).slice(1).join(".");
+$("#device").textContent = `iOS ${ios || "?"} · ${navigator.hardwareConcurrency || "?"} cores · WebGPU ${"gpu" in navigator ? "yes" : "no"} · ${ua.includes("CriOS") ? "Chrome" : "Safari"}`;
+
+function render() {
+  $("#engines").innerHTML = ENGINES.map((e) => {
+    const r = results[e.id] || {};
+    const st = r.status === "ok" ? `<span class="ok">Works</span>` : r.status ? `<span class="bad">${r.status === "running" ? "Testing…" : "Failed"}</span>` : "";
+    return `<div class="card"><div class="row"><strong>${e.label}</strong><span class="spacer"></span>${st}</div>
+      <div class="log" id="log-${e.id}">${(r.log || []).join("\n")}${r.note ? "\n" + r.note : ""}</div>
+      <div class="row" style="margin-top:10px"><button data-id="${e.id}">${r.status ? "Test again" : "Test"}</button></div></div>`;
+  }).join("");
+  document.querySelectorAll("button[data-id]").forEach((b) => (b.onclick = () => run(b.dataset.id)));
+  $("#summary").textContent = summary() || "No tests run yet.";
+}
+function summary() {
+  return ENGINES.filter((e) => results[e.id]).map((e) => {
+    const r = results[e.id];
+    return `${e.id}: ${r.status}${r.detail ? " · " + r.detail : ""}${r.error ? " · " + r.error : ""}`;
+  }).join("\n") + (Object.keys(results).length ? `\n${$("#device").textContent}` : "");
+}
+$("#copy").onclick = async () => {
+  try { await navigator.clipboard.writeText(summary()); $("#copy").textContent = "Copied"; } catch { alert(summary()); }
+};
+
+const SILENT = URL.createObjectURL(new Blob([wav(new Int16Array(2400), 24000)], { type: "audio/wav" }));
+function wav(pcm, rate) {
+  const b = new ArrayBuffer(44 + pcm.length * 2), v = new DataView(b);
+  const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  w(0, "RIFF"); v.setUint32(4, 36 + pcm.length * 2, true); w(8, "WAVE"); w(12, "fmt "); v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true);
+  v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, "data"); v.setUint32(40, pcm.length * 2, true);
+  new Int16Array(b, 44).set(pcm);
+  return b;
+}
+
+let busy = false;
+function run(id) {
+  if (busy) return;
+  busy = true;
+  const eng = ENGINES.find((e) => e.id === id);
+  const au = $("#au"); au.src = SILENT; au.play().catch(() => {}); // allow playback later
+  const t0 = performance.now();
+  const r = (results[id] = { status: "running", log: [] });
+  const sec = () => ((performance.now() - t0) / 1000).toFixed(1) + "s";
+  const log = (s) => { r.log.push(`${sec()}  ${s}`); save(results); const el = $("#log-" + id); if (el) el.textContent = r.log.join("\n"); };
+  render(); save(results);
+  document.querySelectorAll("button[data-id]").forEach((b) => (b.disabled = true));
+
+  let lastBeat = performance.now(), phase = "start", lastMB = -1;
+  const finish = (status, extra = {}) => {
+    clearInterval(dog); worker.terminate(); busy = false;
+    Object.assign(r, { status }, extra); save(results); render();
+  };
+  const worker = new Worker(eng.file, { type: "module" });
+  worker.onerror = (e) => { log("worker error: " + (e.message || "failed to start")); finish("failed", { error: e.message || "worker failed to start" }); };
+  worker.onmessage = (ev) => {
+    const m = ev.data; lastBeat = performance.now();
+    if (m.type === "phase") { phase = m.phase; log({ started: "engine script loaded", download: "downloading model…", init: "download done, starting engine…", ready: "engine ready" }[m.phase] || m.phase); }
+    else if (m.type === "load-progress") {
+      const mb = Math.floor(m.loaded / 1048576 / 10) * 10;
+      if (mb !== lastMB) { lastMB = mb; log(`downloaded ${mb} MB`); }
+    } else if (m.type === "preview") {
+      const pcm = new Int16Array(m.samples.length);
+      for (let i = 0; i < pcm.length; i++) pcm[i] = Math.max(-1, Math.min(1, m.samples[i])) * 32767;
+      const dur = m.samples.length / m.rate;
+      log(`made ${dur.toFixed(1)}s of speech in ${(m.ms / 1000).toFixed(1)}s`);
+      au.src = URL.createObjectURL(new Blob([wav(pcm, m.rate)], { type: "audio/wav" }));
+      au.play().catch(() => {});
+      finish("ok", { detail: `${(dur / (m.ms / 1000)).toFixed(2)}x real time, total ${sec()}` });
+    } else if (m.type === "error") {
+      log("error: " + m.message);
+      finish("failed", { error: m.message });
+    }
+  };
+  // If the engine goes silent, Safari has most likely killed it.
+  const dog = setInterval(() => {
+    const quiet = (performance.now() - lastBeat) / 1000;
+    const limit = phase === "download" ? 90 : 120;
+    if (quiet > limit) { log(`no response for ${Math.round(quiet)}s during "${phase}"`); finish("failed", { error: `stopped responding during ${phase}` }); }
+  }, 2000);
+  worker.postMessage({ type: "preview", id: 1, device: eng.device, engine: id, voice: "af_heart", speed: 1,
+    text: "Hi! If you can hear this, this engine works on your phone." });
+}
+render();
+</script>
+</body>
+</html>
