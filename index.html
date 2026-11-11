@@ -2,130 +2,174 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="default">
-  <meta name="apple-mobile-web-app-title" content="Reader">
-  <meta name="theme-color" content="#f5f3ef" media="(prefers-color-scheme: light)">
-  <meta name="theme-color" content="#151413" media="(prefers-color-scheme: dark)">
-  <title>Kokoro Reader</title>
-  <link rel="manifest" href="manifest.webmanifest">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Audiobook Maker</title>
   <link rel="icon" href="icons/icon-192.png">
-  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
   <style>
     :root {
-      --bg: #f5f3ef; --card: #ffffff; --ink: #1d1b19; --muted: #6f6a64; --line: #e4e0da;
-      --accent: #c2410c; --accent-ink: #ffffff; --accent-soft: #fbe7dc; --danger: #b42318;
-      --ok: #2f7d4f; --radius: 16px; --shadow: 0 1px 2px rgba(0,0,0,.05), 0 4px 16px rgba(0,0,0,.04);
+      --bg: #f5f3ef; --card: #fff; --ink: #1d1b19; --muted: #6f6a64; --line: #e4e0da;
+      --accent: #c2410c; --accent-ink: #fff; --accent-soft: #fbe7dc; --danger: #b42318; --ok: #2f7d4f;
+      --radius: 14px;
     }
     @media (prefers-color-scheme: dark) {
-      :root {
-        --bg: #151413; --card: #211f1d; --ink: #f2efeb; --muted: #a39d96; --line: #34312e;
-        --accent: #f0743a; --accent-ink: #1a0d05; --accent-soft: #3a2418; --danger: #f97066; --ok: #6cc08b;
-        --shadow: none;
-      }
+      :root { --bg: #151413; --card: #211f1d; --ink: #f2efeb; --muted: #a39d96; --line: #34312e;
+        --accent: #f0743a; --accent-ink: #1a0d05; --accent-soft: #3a2418; --danger: #f97066; --ok: #6cc08b; }
     }
-    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    * { box-sizing: border-box; }
     html, body { margin: 0; background: var(--bg); color: var(--ink); }
-    body {
-      font: 17px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
-      padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
-      min-height: 100vh; -webkit-text-size-adjust: 100%;
-    }
+    body { font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
     button, input, select, textarea { font: inherit; color: inherit; }
-    button { cursor: pointer; }
-    .wrap { max-width: 640px; margin: 0 auto; padding: 0 16px 40px; }
-
-    header.bar {
-      position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 88%, transparent);
-      backdrop-filter: saturate(180%) blur(16px); -webkit-backdrop-filter: saturate(180%) blur(16px);
-      display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; min-height: 52px; padding: 0 8px;
-    }
-    header.bar h1 { margin: 0; font-size: 17px; font-weight: 600; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 60vw; }
-    header.bar .left { justify-self: start; } header.bar .right { justify-self: end; }
-    .navbtn { background: none; border: 0; color: var(--accent); padding: 10px 8px; font-size: 17px; display: inline-flex; align-items: center; gap: 4px; }
-    .navbtn svg { width: 22px; height: 22px; }
-
-    .big-title { font-size: 32px; font-weight: 700; letter-spacing: -.02em; margin: 8px 0 14px; }
-    .card { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); border: 1px solid var(--line); padding: 16px; margin: 0 0 14px; }
-    .muted { color: var(--muted); } .small { font-size: 14px; } .tiny { font-size: 12.5px; }
-    .row { display: flex; gap: 10px; align-items: center; }
-    .row.wrapok { flex-wrap: wrap; }
-    .spacer { flex: 1; }
-    .stack > * + * { margin-top: 12px; }
-
-    .btn {
-      appearance: none; border: 0; border-radius: 12px; padding: 12px 16px; font-weight: 600; font-size: 16px;
-      background: var(--accent-soft); color: var(--accent); display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 46px;
-    }
+    .wrap { max-width: 880px; margin: 0 auto; padding: 28px 20px 60px; }
+    h1 { font-size: 28px; letter-spacing: -.02em; margin: 0 0 4px; }
+    h2 { font-size: 17px; margin: 0; display: flex; align-items: center; gap: 10px; }
+    h2 .n { width: 26px; height: 26px; border-radius: 50%; background: var(--accent); color: var(--accent-ink); font-size: 14px; display: grid; place-items: center; flex: none; }
+    .muted { color: var(--muted); } .small { font-size: 13.5px; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px 20px; margin: 16px 0; }
+    .card > h2 + * { margin-top: 14px; }
+    .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .grow { flex: 1; min-width: 0; }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    @media (max-width: 640px) { .grid2 { grid-template-columns: 1fr; } }
+    label.f { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+    input[type=text], select, textarea { width: 100%; border: 1px solid var(--line); background: var(--bg); border-radius: 10px; padding: 9px 11px; outline: none; }
+    input[type=text]:focus, select:focus, textarea:focus { border-color: var(--accent); }
+    textarea { min-height: 180px; resize: vertical; }
+    .btn { border: 0; border-radius: 10px; padding: 9px 15px; font-weight: 600; background: var(--accent-soft); color: var(--accent); cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
     .btn.primary { background: var(--accent); color: var(--accent-ink); }
+    a.btn { text-decoration: none; }
     .btn.ghost { background: transparent; border: 1px solid var(--line); color: var(--ink); }
-    .btn.danger { background: transparent; color: var(--danger); border: 1px solid var(--line); }
-    .btn.block { width: 100%; }
-    .btn:disabled { opacity: .45; }
-    .btn svg { width: 20px; height: 20px; }
+    .btn.big { padding: 13px 22px; font-size: 16px; }
+    .btn:disabled { opacity: .45; cursor: default; }
+    .icon { background: none; border: 0; color: var(--muted); cursor: pointer; padding: 4px 7px; border-radius: 6px; font-size: 15px; }
+    .icon:hover:not(:disabled) { background: var(--accent-soft); color: var(--accent); }
+    .icon:disabled { opacity: .3; cursor: default; }
 
-    .doclist { list-style: none; margin: 0; padding: 0; }
-    .doclist li { border-bottom: 1px solid var(--line); }
-    .doclist li:last-child { border-bottom: 0; }
-    .doclist button { width: 100%; text-align: left; background: none; border: 0; padding: 14px 4px; display: flex; gap: 12px; align-items: center; }
-    .doclist .t { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .doclist .m { font-size: 14px; color: var(--muted); }
-    .doclist .grow { flex: 1; min-width: 0; }
-    .pill { font-size: 12px; font-weight: 600; padding: 3px 8px; border-radius: 99px; background: var(--line); color: var(--muted); white-space: nowrap; }
-    .pill.ready { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
-    .pill.busy { background: var(--accent-soft); color: var(--accent); }
-    .chev { color: var(--muted); width: 18px; height: 18px; flex: none; }
+    .drop { border: 2px dashed var(--line); border-radius: var(--radius); padding: 26px; text-align: center; transition: .15s; }
+    .drop.over { border-color: var(--accent); background: var(--accent-soft); }
+    .drop p { margin: 0 0 12px; }
+    .files { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+    .chip { display: inline-flex; align-items: center; gap: 4px; background: var(--bg); border: 1px solid var(--line); border-radius: 99px; padding: 3px 4px 3px 12px; font-size: 13.5px; }
+    .chip button { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 15px; padding: 0 6px; }
 
-    .empty { text-align: center; padding: 40px 16px; }
-    .empty svg { width: 56px; height: 56px; color: var(--accent); }
+    .chapters { list-style: none; margin: 12px 0 0; padding: 0; border-top: 1px solid var(--line); }
+    .chapters li { border-bottom: 1px solid var(--line); padding: 8px 0; }
+    .chapters .line { display: flex; gap: 8px; align-items: center; }
+    .chapters .num { width: 28px; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; flex: none; }
+    .chapters input[type=text] { padding: 6px 9px; }
+    .chapters .meta { font-size: 13px; color: var(--muted); white-space: nowrap; width: 150px; text-align: right; }
+    .chapters details { margin: 4px 0 0 36px; }
+    .chapters summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+    .chapters pre { white-space: pre-wrap; font: 13.5px/1.5 system-ui, sans-serif; color: var(--muted); max-height: 220px; overflow: auto; margin: 6px 0 0; background: var(--bg); padding: 10px; border-radius: 8px; }
+    .total { margin-top: 10px; font-size: 14px; }
 
-    label.field { display: block; font-size: 14px; color: var(--muted); margin-bottom: 6px; }
-    input[type=text], select, textarea {
-      width: 100%; border: 1px solid var(--line); background: var(--bg); border-radius: 12px; padding: 12px; font-size: 16px; outline: none;
-    }
-    select { appearance: none; -webkit-appearance: none; background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%); background-position: calc(100% - 20px) 52%, calc(100% - 14px) 52%; background-size: 6px 6px; background-repeat: no-repeat; padding-right: 36px; }
-    textarea { min-height: 45vh; resize: vertical; line-height: 1.5; }
-    input:focus, select:focus, textarea:focus { border-color: var(--accent); }
-    .check { display: flex; gap: 10px; align-items: center; font-size: 15px; }
-    .check input { width: 20px; height: 20px; accent-color: var(--accent); }
-
-    .progress { height: 8px; background: var(--line); border-radius: 99px; overflow: hidden; }
-    .progress > div { height: 100%; background: var(--accent); width: 0; transition: width .3s; }
-
-    .player .time { font-variant-numeric: tabular-nums; font-size: 14px; color: var(--muted); display: flex; justify-content: space-between; margin-top: 4px; }
-    .player input[type=range] { width: 100%; accent-color: var(--accent); height: 28px; }
-    .controls { display: flex; justify-content: center; align-items: center; gap: 22px; margin-top: 6px; }
-    .roundbtn { background: none; border: 0; color: var(--ink); display: grid; place-items: center; width: 52px; height: 52px; border-radius: 50%; position: relative; }
-    .roundbtn svg { width: 30px; height: 30px; }
-    .roundbtn .lbl { position: absolute; font-size: 10px; font-weight: 700; top: 19px; }
-    .playbtn { width: 72px; height: 72px; background: var(--accent); color: var(--accent-ink); border-radius: 50%; }
-    .playbtn svg { width: 34px; height: 34px; }
-    .rate { background: var(--accent-soft); color: var(--accent); border: 0; border-radius: 10px; padding: 6px 10px; font-weight: 700; font-size: 14px; min-width: 56px; }
-
-    .textpreview { white-space: pre-wrap; max-height: 40vh; overflow: auto; font-size: 15px; color: var(--muted); }
-    details summary { cursor: pointer; font-weight: 600; list-style: none; }
-    details summary::-webkit-details-marker { display: none; }
-    .seg { display: grid; gap: 8px; }
-    .seg label { display: flex; gap: 12px; align-items: flex-start; padding: 12px; border: 1px solid var(--line); border-radius: 12px; }
-    .seg input { margin-top: 3px; width: 20px; height: 20px; accent-color: var(--accent); flex: none; }
-    .toast {
-      position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom)); transform: translateX(-50%) translateY(20px);
-      background: var(--ink); color: var(--bg); padding: 12px 16px; border-radius: 14px; font-size: 15px; max-width: min(92vw, 520px);
-      opacity: 0; pointer-events: none; transition: all .25s; z-index: 50; text-align: center;
-    }
-    .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+    .progress { height: 10px; background: var(--line); border-radius: 99px; overflow: hidden; }
+    .progress > div { height: 100%; width: 0; background: var(--accent); transition: width .4s; }
+    .status { font-size: 14px; color: var(--muted); }
+    .error { color: var(--danger); font-size: 14px; }
+    .done { border-color: color-mix(in srgb, var(--ok) 50%, var(--line)); }
+    .done h2 { color: var(--ok); }
     .hidden { display: none !important; }
-    .warn { background: var(--accent-soft); color: var(--ink); border-radius: 12px; padding: 10px 12px; font-size: 14px; }
+    ol.tips { margin: 8px 0 0; padding-left: 20px; } ol.tips li { margin: 3px 0; }
+    .check { display: flex; gap: 8px; align-items: center; }
+    .check input { width: 17px; height: 17px; accent-color: var(--accent); }
   </style>
 </head>
 <body>
-  <div id="app"></div>
-  <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <audio id="player" preload="auto" playsinline></audio>
-  <audio id="previewPlayer" preload="auto" playsinline></audio>
-  <noscript><p style="padding:20px">This app needs JavaScript.</p></noscript>
-  <script type="module" src="app.js"></script>
+<div class="wrap">
+  <h1>Audiobook Maker</h1>
+  <div class="muted">Turn documentation into an <strong>.m4b audiobook</strong> with chapters, using natural Kokoro voices. Everything runs in this browser; your text isn't uploaded or saved.</div>
+
+  <section class="card" id="inputCard">
+    <h2><span class="n">1</span> Add documentation</h2>
+    <div class="drop" id="drop">
+      <p>Drop <strong>.md</strong> or <strong>.txt</strong> files or a whole folder here</p>
+      <div class="row" style="justify-content:center">
+        <button class="btn" id="pickFiles">Choose files…</button>
+        <button class="btn" id="pickFolder">Choose folder…</button>
+        <button class="btn ghost" id="pasteToggle">Paste text</button>
+      </div>
+      <input type="file" id="fileInput" multiple accept=".md,.markdown,.txt,.text,text/plain,text/markdown" class="hidden">
+      <input type="file" id="folderInput" webkitdirectory multiple class="hidden">
+    </div>
+    <div id="pasteBox" class="hidden" style="margin-top:12px">
+      <textarea id="pasteText" placeholder="Paste text or Markdown…"></textarea>
+      <div class="row" style="margin-top:8px"><input type="text" id="pasteName" placeholder="Name (optional)" style="max-width:280px"><button class="btn primary" id="pasteAdd">Add</button></div>
+    </div>
+    <div class="files" id="files"></div>
+  </section>
+
+  <section class="card hidden" id="chapterCard">
+    <h2><span class="n">2</span> Chapters</h2>
+    <div class="grid2">
+      <div><label class="f" for="bookTitle">Book title</label><input type="text" id="bookTitle"></div>
+      <div><label class="f" for="author">Author (optional)</label><input type="text" id="author"></div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <label class="f" for="splitMode" style="margin:0">Split into chapters:</label>
+      <select id="splitMode" style="width:auto">
+        <option value="auto">Automatically</option>
+        <option value="files">One per file</option>
+        <option value="headings">At every # and ## heading</option>
+      </select>
+    </div>
+    <ul class="chapters" id="chapters"></ul>
+    <div class="total" id="total"></div>
+  </section>
+
+  <section class="card hidden" id="voiceCard">
+    <h2><span class="n">3</span> Voice</h2>
+    <div class="grid2">
+      <div><label class="f" for="voice">Voice</label>
+        <div class="row" style="flex-wrap:nowrap"><select id="voice"></select><button class="btn" id="sampleBtn" style="flex:none">▶ Sample</button></div></div>
+      <div><label class="f" for="speed">Speed</label>
+        <select id="speed">
+          <option value="0.85">0.85× (slower)</option><option value="0.9">0.9×</option><option value="1" selected>Normal</option>
+          <option value="1.1">1.1×</option><option value="1.2">1.2×</option><option value="1.3">1.3× (faster)</option>
+        </select></div>
+    </div>
+    <div class="row" style="margin-top:12px; justify-content: space-between">
+      <label class="check"><input type="checkbox" id="announce" checked> Read chapter titles aloud</label>
+      <div class="row"><label class="f" for="engine" style="margin:0">Engine:</label>
+        <select id="engine" style="width:auto">
+          <option value="auto">Automatic</option><option value="webgpu">Graphics card (fast)</option><option value="wasm">Processor</option>
+        </select></div>
+    </div>
+    <div class="status" id="engineStatus" style="margin-top:8px"></div>
+    <audio id="sampleAudio"></audio>
+  </section>
+
+  <section class="card hidden" id="makeCard">
+    <h2><span class="n">4</span> Create</h2>
+    <div id="makeIdle">
+      <button class="btn primary big" id="createBtn">Create audiobook</button>
+      <div class="status" id="estimate" style="margin-top:8px"></div>
+    </div>
+    <div id="makeRunning" class="hidden">
+      <div class="row"><strong class="grow" id="runTitle">Starting…</strong><span class="status" id="runPct"></span></div>
+      <div class="progress" style="margin:10px 0"><div id="bar"></div></div>
+      <div class="status" id="runStatus"></div>
+      <div class="row" style="margin-top:12px"><button class="btn ghost" id="stopBtn">Stop</button>
+        <span class="status small">Keep this tab open. It can be in the background.</span></div>
+    </div>
+    <div class="error" id="makeError"></div>
+  </section>
+
+  <section class="card done hidden" id="doneCard">
+    <h2>✓ Your audiobook is ready</h2>
+    <div class="row" style="margin-top:12px">
+      <a class="btn primary big" id="downloadBtn" download>Download</a>
+      <span class="status" id="doneInfo"></span>
+    </div>
+    <div class="small" style="margin-top:14px"><strong>To listen on your iPhone</strong>
+      <ol class="tips">
+        <li>Get the file onto the phone, for example by saving it to iCloud Drive or Google Drive, or emailing it to yourself.</li>
+        <li>On the iPhone, open it in the <strong>Files</strong> app, tap Share, and choose <strong>Books</strong> or <strong>BookPlayer</strong>.</li>
+        <li>Chapters show up in the player's chapter list, and it remembers where you stopped.</li>
+      </ol>
+    </div>
+    <button class="btn ghost" id="againBtn" style="margin-top:10px">Make another</button>
+  </section>
+</div>
+<script type="module" src="app.js"></script>
 </body>
 </html>

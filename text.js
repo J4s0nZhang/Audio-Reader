@@ -133,3 +133,80 @@ export function hashString(s) {
   }
   return h.toString(36);
 }
+
+// ---------- chapters ----------
+
+const cleanTitle = (s) => s.replace(/[*_`~]/g, "").replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").replace(/\s+#*\s*$/, "").trim();
+const fileTitle = (name) => String(name || "Untitled").replace(/\.[^.]+$/, "").replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim();
+const words = (t) => (String(t).match(/\S+/g) || []).length;
+
+/** Markdown headings outside code blocks: [{ level, title, line }]. */
+export function headingsOf(text) {
+  const out = [];
+  let fence = null;
+  String(text).split(/\r?\n/).forEach((l, line) => {
+    const f = l.match(/^[ \t]*(`{3,}|~{3,})/);
+    if (f) { if (!fence) fence = f[1][0]; else if (f[1][0] === fence) fence = null; return; }
+    if (fence) return;
+    const h = l.match(/^\s{0,3}(#{1,6})\s+(.+?)\s*$/);
+    if (h) out.push({ level: h[1].length, title: cleanTitle(h[2]), line });
+  });
+  return out;
+}
+
+/** Split one document at headings of the given levels. Text before the first heading becomes an intro. */
+function splitAt(doc, levels) {
+  const lines = String(doc.text).split(/\r?\n/);
+  const cuts = headingsOf(doc.text).filter((h) => levels.includes(h.level));
+  if (!cuts.length) return [{ title: doc.title, text: doc.text }];
+  const parts = [];
+  const intro = lines.slice(0, cuts[0].line).join("\n").trim();
+  // A lone top heading that names the document isn't content.
+  const introBody = intro.replace(/^\s{0,3}#\s+.*$/m, "").trim();
+  if (words(introBody) >= 40) parts.push({ title: "Introduction", text: introBody });
+  cuts.forEach((h, k) => {
+    let body = lines.slice(h.line + 1, k + 1 < cuts.length ? cuts[k + 1].line : lines.length).join("\n").trim();
+    if (k === 0 && introBody && words(introBody) < 40) body = introBody + "\n\n" + body;
+    parts.push({ title: h.title, text: body });
+  });
+  return parts;
+}
+
+/**
+ * Turn input documents into chapters.
+ * mode: "auto" (each file is a chapter; a single file is split at its main headings),
+ *       "files" (one chapter per file), "headings" (split at every # and ## heading).
+ */
+export function buildChapters(docs, mode = "auto") {
+  return buildChaptersRaw(docs, mode).filter((c) => c.text.trim());
+}
+
+function buildChaptersRaw(docs, mode) {
+  docs = docs.filter((d) => String(d.text || "").trim()).map((d) => {
+    const hs = headingsOf(d.text);
+    const h1s = hs.filter((h) => h.level === 1);
+    return { ...d, title: h1s.length === 1 ? h1s[0].title : fileTitle(d.name), hs };
+  });
+  if (!docs.length) return [];
+  if (mode === "files") return docs.map((d) => ({ title: d.title, text: stripLeadingH1(d.text) }));
+  if (mode === "headings") return docs.flatMap((d) => splitAt(d, [1, 2]).map(nameIntro(d, docs.length)));
+  // auto
+  if (docs.length > 1) return docs.map((d) => ({ title: d.title, text: stripLeadingH1(d.text) }));
+  const d = docs[0];
+  const count = (lvl) => d.hs.filter((h) => h.level === lvl).length;
+  const level = count(1) >= 2 ? 1 : count(2) >= 2 ? 2 : count(3) >= 2 ? 3 : 0;
+  if (!level) return [{ title: d.title, text: stripLeadingH1(d.text) }];
+  return splitAt(d, [level]).map(nameIntro(d, 1));
+}
+
+const nameIntro = (d, n) => (c) => (c.title === "Introduction" && n > 1 ? { ...c, title: d.title } : c);
+const stripLeadingH1 = (t) => String(t).replace(/^\s*#\s+.*(\r?\n|$)/, "").trim();
+
+/** Default book title for a set of documents. */
+export function bookTitle(docs) {
+  const named = docs.filter((d) => String(d.text || "").trim());
+  if (!named.length) return "";
+  const hs = headingsOf(named[0].text).filter((h) => h.level === 1);
+  const first = hs.length === 1 ? hs[0].title : fileTitle(named[0].name);
+  return named.length === 1 ? first : first + (named.length > 1 ? " and more" : "");
+}

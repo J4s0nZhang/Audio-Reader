@@ -1,967 +1,475 @@
-import { chunkText, hashString } from "./text.js";
+import { buildChapters, bookTitle, toParagraphs, makeChunks } from "./text.js";
+import { AudiobookWriter } from "./audiobook.js";
 
-// ---------- small helpers ----------
-const $ = (sel, root = document) => root.querySelector(sel);
-const app = $("#app");
+const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
-const wordCount = (t) => (String(t).match(/\S+/g) || []).length;
-const fmtTime = (sec) => {
-  sec = Math.max(0, Math.floor(sec || 0));
+const words = (t) => (String(t).match(/\S+/g) || []).length;
+const fmtDur = (sec) => {
+  sec = Math.max(0, Math.round(sec));
   const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
   return h ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}` : `${m}:${String(s).padStart(2, "0")}`;
 };
-const fmtMB = (b) => (b / 1048576).toFixed(b > 104857600 ? 0 : 1) + " MB";
-const fmtMins = (sec) => (sec < 90 ? "about 1 min" : `about ${Math.round(sec / 60)} min`);
-
-let toastTimer;
-function toast(msg, ms = 3200) {
-  const t = $("#toast");
-  t.textContent = msg;
-  t.classList.add("show");
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove("show"), ms);
-}
-
-const ICON = {
-  back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>',
-  chev: '<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>',
-  plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
-  gear: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>',
-  play: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/></svg>',
-  pause: '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1.2"/><rect x="14" y="5" width="4" height="14" rx="1.2"/></svg>',
-  back15: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>',
-  fwd30: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/></svg>',
-  share: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M8 7l4-4 4 4"/><path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/></svg>',
-  speaker: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5L6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></svg>',
-  doc: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h4"/></svg>',
+const fmtMins = (sec) => (sec < 60 ? "under a minute" : sec < 5400 ? `about ${Math.round(sec / 60)} min` : `about ${(sec / 3600).toFixed(1)} hours`);
+const fmtMB = (b) => (b / 1048576).toFixed(b < 10485760 ? 1 : 0) + " MB";
+const pref = {
+  get(k, d) { try { const v = localStorage.getItem("abm:" + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem("abm:" + k, JSON.stringify(v)); } catch {} },
 };
 
 // ---------- voices ----------
 const VOICES = [
-  ["af_heart", "Heart", "best"],
-  ["af_bella", "Bella", "very good"],
-  ["af_nicole", "Nicole", "soft"],
-  ["bf_emma", "Emma", "British"],
-  ["af_aoede", "Aoede", ""],
-  ["af_kore", "Kore", ""],
-  ["af_sarah", "Sarah", ""],
-  ["bf_isabella", "Isabella", "British"],
-  ["af_nova", "Nova", ""],
-  ["af_alloy", "Alloy", ""],
-  ["af_sky", "Sky", ""],
-  ["am_michael", "Michael", "male"],
-  ["am_fenrir", "Fenrir", "male"],
-  ["am_puck", "Puck", "male"],
-  ["bm_fable", "Fable", "British male"],
-  ["bm_george", "George", "British male"],
+  ["Recommended", [["af_heart", "Heart · American female · A"], ["af_bella", "Bella · American female · A-"], ["af_nicole", "Nicole · American female, soft · B-"], ["bf_emma", "Emma · British female · B-"]]],
+  ["More female voices", [["af_aoede", "Aoede · American · C+"], ["af_kore", "Kore · American · C+"], ["af_sarah", "Sarah · American · C+"], ["af_nova", "Nova · American · C"], ["af_alloy", "Alloy · American · C"], ["bf_isabella", "Isabella · British · C"], ["af_sky", "Sky · American · C-"]]],
+  ["Male voices", [["am_michael", "Michael · American · C+"], ["am_fenrir", "Fenrir · American · C+"], ["am_puck", "Puck · American · C+"], ["bm_george", "George · British · C"], ["bm_fable", "Fable · British · C"]]],
 ];
-const voiceName = (id) => (VOICES.find((v) => v[0] === id) || [id, id])[1];
-const SPEEDS = [0.85, 0.9, 1, 1.1, 1.2, 1.3];
-const RATES = [1, 1.15, 1.25, 1.5, 1.75, 2, 0.85];
+const voiceName = (id) => (VOICES.flatMap((g) => g[1]).find((v) => v[0] === id)?.[1] || id).split(" · ")[0];
+$("#voice").innerHTML = VOICES.map(([g, vs]) => `<optgroup label="${g}">${vs.map(([id, n]) => `<option value="${id}">${n}</option>`).join("")}</optgroup>`).join("");
+$("#voice").value = pref.get("voice", "af_heart");
+$("#speed").value = String(pref.get("speed", 1));
+$("#announce").checked = pref.get("announce", true);
+$("#engine").value = pref.get("engine", "auto");
+$("#author").value = pref.get("author", "");
+for (const id of ["voice", "speed", "engine"]) $("#" + id).onchange = (e) => { pref.set(id, e.target.value); if (id === "engine") resetPool(); updateEstimate(); };
+$("#speed").onchange = (e) => { pref.set("speed", +e.target.value); updateEstimate(); };
+$("#announce").onchange = (e) => { pref.set("announce", e.target.checked); renderChapters(); };
+$("#author").oninput = (e) => pref.set("author", e.target.value);
 
-// ---------- settings ----------
-const memSettings = {};
-const settings = {
-  get(k, d) {
-    try { const v = localStorage.getItem("kr:" + k); return v === null ? d : JSON.parse(v); }
-    catch { return k in memSettings ? memSettings[k] : d; }
-  },
-  set(k, v) {
-    try { localStorage.setItem("kr:" + k, JSON.stringify(v)); } catch { memSettings[k] = v; }
-  },
-};
+// ---------- input ----------
+let docs = []; // { id, name, text }
+let chapters = []; // { title, text }
+let nextId = 1;
+const TEXT_FILE = /\.(md|markdown|txt|text)$/i;
+const natural = (a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
 
-// ---------- IndexedDB ----------
-let dbp;
-function db() {
-  if (!dbp) {
-    dbp = new Promise((resolve, reject) => {
-      const req = indexedDB.open("kokoro-reader", 1);
-      req.onupgradeneeded = () => {
-        const d = req.result;
-        d.createObjectStore("docs", { keyPath: "id" });
-        const c = d.createObjectStore("chunks", { keyPath: "key" });
-        c.createIndex("docId", "docId");
-      };
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error);
-    });
-  }
-  return dbp;
+async function addFiles(fileList) {
+  const files = [...fileList].filter((f) => TEXT_FILE.test(f.name) || f.type.startsWith("text/"));
+  const skipped = fileList.length - files.length;
+  files.sort((a, b) => natural(a.webkitRelativePath || a.relPath || a.name, b.webkitRelativePath || b.relPath || b.name));
+  for (const f of files) docs.push({ id: nextId++, name: f.name, path: f.webkitRelativePath || f.relPath || f.name, text: await f.text() });
+  if (skipped > 0) showError(`Skipped ${skipped} file${skipped > 1 ? "s" : ""} that ${skipped > 1 ? "aren't" : "isn't"} .md or .txt.`);
+  else showError("");
+  docsChanged();
 }
-async function tx(store, mode, fn) {
-  const d = await db();
-  return new Promise((resolve, reject) => {
-    const t = d.transaction(store, mode);
-    const s = t.objectStore(store);
-    let result;
-    Promise.resolve(fn(s)).then((r) => (result = r));
-    t.oncomplete = () => resolve(result);
-    t.onerror = () => reject(t.error);
-    t.onabort = () => reject(t.error || new Error("Storage transaction aborted"));
-  });
-}
-const reqP = (r) => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
-const getDocRaw = (id) => tx("docs", "readonly", (s) => reqP(s.get(id)));
-// While audio is being made, progress lives in memory (job.gen) and is saved every few seconds,
-// so reads overlay the live progress.
-async function getDoc(id) {
-  const d = await getDocRaw(id);
-  if (d && job && job.docId === id && job.gen && d.gen && d.gen.key === job.gen.key) d.gen = { ...job.gen };
-  return d;
-}
-const putDoc = (doc) => tx("docs", "readwrite", (s) => { s.put(doc); });
-const allDocs = async () => (await tx("docs", "readonly", (s) => reqP(s.getAll()))).sort((a, b) => b.updatedAt - a.updatedAt);
-const putChunk = (rec) => tx("chunks", "readwrite", (s) => { s.put(rec); });
-const getChunks = async (docId) =>
-  (await tx("chunks", "readonly", (s) => reqP(s.index("docId").getAll(IDBKeyRange.only(docId))))).sort((a, b) => a.i - b.i);
-const deleteChunks = (docId) =>
-  tx("chunks", "readwrite", (s) => {
-    const r = s.index("docId").openKeyCursor(IDBKeyRange.only(docId));
-    r.onsuccess = () => { const c = r.result; if (c) { s.delete(c.primaryKey); c.continue(); } };
-  });
-async function deleteDoc(id) { await deleteChunks(id); await tx("docs", "readwrite", (s) => { s.delete(id); }); }
 
-// ---------- audio encoding ----------
-function wavHeader(numSamples, rate) {
-  const b = new ArrayBuffer(44), v = new DataView(b);
-  const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
-  w(0, "RIFF"); v.setUint32(4, 36 + numSamples * 2, true); w(8, "WAVE");
-  w(12, "fmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
-  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
-  w(36, "data"); v.setUint32(40, numSamples * 2, true);
-  return b;
-}
-function toInt16(f32, padSamples = 0) {
-  const out = new Int16Array(f32.length + padSamples);
-  for (let i = 0; i < f32.length; i++) {
-    const x = Math.max(-1, Math.min(1, f32[i]));
-    out[i] = x < 0 ? x * 32768 : x * 32767;
-  }
+// Folders dropped onto the page: walk them for text files.
+async function filesFromDrop(items) {
+  const out = [];
+  const walk = async (entry, path) => {
+    if (entry.isFile) {
+      const f = await new Promise((res, rej) => entry.file(res, rej));
+      f.relPath = path + f.name;
+      out.push(f);
+    } else if (entry.isDirectory) {
+      const reader = entry.createReader();
+      let batch;
+      do {
+        batch = await new Promise((res, rej) => reader.readEntries(res, rej));
+        for (const e of batch) if (!e.name.startsWith(".") && e.name !== "node_modules") await walk(e, path + entry.name + "/");
+      } while (batch.length);
+    }
+  };
+  const entries = [...items].map((i) => i.webkitGetAsEntry?.()).filter(Boolean);
+  for (const e of entries) await walk(e, "");
   return out;
 }
-const SILENT_URL = URL.createObjectURL(new Blob([wavHeader(2400, 24000), new ArrayBuffer(4800)], { type: "audio/wav" }));
 
-// ---------- the speech engine (web worker) ----------
-// iPhone Safari can't run every build of the ONNX runtime, so there are a few to choose from.
-// diag.html tests them on the phone.
-export const ENGINES = {
-  lite: { file: "engines/lite.js", device: "wasm", name: "Low memory", note: "Built for iPhones: ONNX Runtime 1.21 on the CPU with a 1 GB memory cap. Downloads about 100 MB once." },
-  ort121: { file: "engines/ort121.js", device: "wasm", name: "Standard A", note: "ONNX Runtime 1.21 on the CPU." },
-  ort131: { file: "engines/ort131.js", device: "wasm", name: "Standard B", note: "ONNX Runtime 1.31 on the CPU." },
-  ort122: { file: "engines/ort122.js", device: "wasm", name: "Standard C", note: "ONNX Runtime 1.22, the original build. Works on computers; crashes on some iPhones." },
-  ort131gpu: { file: "engines/ort131gpu.js", device: "webgpu", name: "Fast (GPU)", note: "Uses the graphics chip. Downloads about 330 MB once and needs more memory." },
+const drop = $("#drop");
+["dragenter", "dragover"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, () => drop.classList.remove("over")));
+drop.addEventListener("drop", async (e) => {
+  e.preventDefault();
+  const items = e.dataTransfer.items;
+  if (items && items.length && items[0].webkitGetAsEntry) addFiles(await filesFromDrop(items));
+  else addFiles(e.dataTransfer.files);
+});
+document.addEventListener("dragover", (e) => e.preventDefault());
+document.addEventListener("drop", (e) => e.preventDefault());
+$("#pickFiles").onclick = () => $("#fileInput").click();
+$("#pickFolder").onclick = () => $("#folderInput").click();
+$("#fileInput").onchange = (e) => { addFiles(e.target.files); e.target.value = ""; };
+$("#folderInput").onchange = (e) => { addFiles(e.target.files); e.target.value = ""; };
+$("#pasteToggle").onclick = () => { $("#pasteBox").classList.toggle("hidden"); $("#pasteText").focus(); };
+$("#pasteAdd").onclick = () => {
+  const text = $("#pasteText").value;
+  if (!text.trim()) return;
+  const n = docs.filter((d) => d.pasted).length + 1;
+  docs.push({ id: nextId++, name: $("#pasteName").value.trim() || `Pasted text ${n}`, text, pasted: true });
+  $("#pasteText").value = ""; $("#pasteName").value = "";
+  $("#pasteBox").classList.add("hidden");
+  docsChanged();
 };
-const DEFAULT_ENGINE = "lite";
-const model = { status: "idle", engine: null, phase: null, loaded: 0, total: 0, error: null };
-let worker = null;
-let loadWaiters = [];
-const previewWaiters = new Map();
-let lastBeat = 0;
 
-function currentEngine() {
-  const e = settings.get("engine", DEFAULT_ENGINE);
-  return ENGINES[e] ? e : DEFAULT_ENGINE;
-}
-const engineDevice = () => ENGINES[currentEngine()].device;
-
-function createWorker() {
-  if (worker) worker.terminate();
-  const engine = currentEngine();
-  worker = new Worker(new URL("./" + ENGINES[engine].file, import.meta.url), { type: "module" });
-  worker.engine = engine;
-  Object.assign(model, { status: "idle", engine: null, phase: null, loaded: 0, total: 0 });
-  worker.onmessage = (e) => { lastBeat = Date.now(); onWorkerMessage(e.data); };
-  worker.onerror = (e) => {
-    e.preventDefault?.();
-    failEverything("Couldn't start the speech engine. Check your internet connection and reload.");
-  };
+function renderFiles() {
+  $("#files").innerHTML = docs.map((d) => `<span class="chip" title="${esc(d.path || d.name)}">${esc(d.name)} <span class="muted small">${words(d.text).toLocaleString()} words</span><button data-rm="${d.id}" aria-label="Remove ${esc(d.name)}">×</button></span>`).join("")
+    + (docs.length > 1 ? `<button class="btn ghost" id="clearAll" style="padding:3px 10px;font-size:13px">Remove all</button>` : "");
+  document.querySelectorAll("[data-rm]").forEach((b) => (b.onclick = () => { docs = docs.filter((d) => d.id !== +b.dataset.rm); docsChanged(); }));
+  $("#clearAll") && ($("#clearAll").onclick = () => { docs = []; docsChanged(); });
 }
 
-/** Post to the engine, restarting it first if the chosen engine changed. */
-function send(msg) {
-  if (!worker || worker.engine !== currentEngine()) createWorker();
-  lastBeat = Date.now();
-  worker.postMessage({ ...msg, engine: currentEngine(), device: engineDevice() });
+let titleEdited = false;
+$("#bookTitle").oninput = () => (titleEdited = true);
+$("#splitMode").onchange = () => { chapters = buildChapters(docs, $("#splitMode").value); renderChapters(); };
+
+function docsChanged() {
+  renderFiles();
+  chapters = buildChapters(docs, $("#splitMode").value);
+  if (!titleEdited || !$("#bookTitle").value.trim()) { $("#bookTitle").value = bookTitle(docs); titleEdited = false; }
+  const has = chapters.length > 0;
+  ["#chapterCard", "#voiceCard", "#makeCard"].forEach((s) => $(s).classList.toggle("hidden", !has));
+  renderChapters();
 }
 
-function failEverything(message) {
-  model.status = "error"; model.error = message;
-  loadWaiters.forEach((w) => w.reject(new Error(message))); loadWaiters = [];
-  previewWaiters.forEach((w) => w.reject(new Error(message))); previewWaiters.clear();
-  if (job) { job = null; releaseWakeLock(); }
-  toast(message, 8000);
-  refresh();
-}
+// ---------- chapters ----------
+const speakable = (text) => toParagraphs(text, { markdown: true }).join("\n\n");
 
-// Safari kills a worker that runs out of memory without reporting an error, so watch for silence.
-setInterval(() => {
-  const busy = model.status === "loading" || previewWaiters.size > 0 || (job && job.charsDone === 0);
-  if (!busy || !worker || document.visibilityState !== "visible") { lastBeat = Date.now(); return; }
-  const quiet = (Date.now() - lastBeat) / 1000;
-  const limit = model.phase === "download" ? 90 : 150;
-  if (quiet > limit) {
-    createWorker();
-    failEverything(`The speech engine stopped responding. This phone may not be able to run “${ENGINES[currentEngine()].name}”. Try another engine in Settings.`);
-  }
-}, 3000);
-document.addEventListener("visibilitychange", () => { lastBeat = Date.now(); });
-
-function ensureModel() {
-  const engine = currentEngine();
-  if (model.status === "ready" && model.engine === engine && worker?.engine === engine) return Promise.resolve();
-  return new Promise((resolve, reject) => {
-    loadWaiters.push({ resolve, reject });
-    if (model.status !== "loading" || model.engine !== engine) {
-      if (!worker || worker.engine !== engine) createWorker();
-      Object.assign(model, { status: "loading", engine, phase: "download", loaded: 0, total: 0, error: null });
-      send({ type: "load" });
-      refresh();
-    }
-  });
-}
-
-/** Human-readable engine status for buttons and progress lines. */
-function loadingText() {
-  if (model.phase === "init") return "Starting the speech engine…";
-  if (model.loaded > 0) {
-    const total = model.total > model.loaded ? model.total : 92 * 1048576;
-    return `Downloading voice model: ${fmtMB(model.loaded)} of ${model.total > model.loaded ? "" : "about "}${fmtMB(total)}`;
-  }
-  return "Loading the speech engine…";
-}
-
-function onWorkerMessage(m) {
-  switch (m.type) {
-    case "phase":
-      if (m.phase === "download" || m.phase === "init") { model.phase = m.phase; if (model.status !== "ready") model.status = "loading"; }
-      if (m.phase === "ready") { model.phase = "ready"; }
-      updateLive(); updatePreviewButton();
-      break;
-    case "load-progress":
-      model.loaded = m.loaded; model.total = m.total;
-      updateLive(); updatePreviewButton();
-      break;
-    case "loaded":
-      model.status = "ready"; model.engine = m.engine; model.phase = "ready";
-      loadWaiters.forEach((w) => w.resolve()); loadWaiters = [];
-      refresh();
-      break;
-    case "preview": {
-      const w = previewWaiters.get(m.id);
-      previewWaiters.delete(m.id);
-      w?.resolve(m);
-      break;
-    }
-    case "chunk": onChunk(m); break;
-    case "done": onJobDone(m); break;
-    case "error": onWorkerError(m); break;
-  }
-}
-
-function onWorkerError(m) {
-  console.error("Speech engine error: " + JSON.stringify(m));
-  if (m.during === "preview") {
-    const w = previewWaiters.get(m.id); previewWaiters.delete(m.id); w?.reject(new Error(m.message));
-    if (model.status !== "ready") { model.status = "error"; model.error = m.message; }
-    return;
-  }
-  if (m.during === "load") { failEverything("Couldn't load the voice model: " + m.message + " Try another engine in Settings."); return; }
-  if (job && (m.jobId === job.jobId || m.during === "generate")) {
-    job = null; releaseWakeLock();
-    toast("Audio generation stopped: " + m.message, 8000);
-    refresh();
-  }
-}
-
-// ---------- generation ----------
-let job = null; // { jobId, docId, genMs, audioSec, charsDone, charsTotal }
-let writeQueue = Promise.resolve();
-const genKey = (doc) => [hashString(doc.text), doc.markdown ? 1 : 0, doc.voice, doc.speed].join("|");
-const audioIsCurrent = (doc) => !!doc.gen && doc.gen.key === genKey(doc);
-
-async function startGeneration(docId, { restart = false } = {}) {
-  if (job) { toast("Already making audio for another document. Stop it first."); return; }
-  let doc = await getDoc(docId);
-  if (!doc) return;
-  if (restart || !audioIsCurrent(doc)) {
-    const chunks = chunkText(doc.text, { markdown: doc.markdown });
-    if (!chunks.length) { toast("There's no text to read."); return; }
-    if (playerState.docId === doc.id) unloadPlayer();
-    await deleteChunks(doc.id);
-    doc.chunks = chunks;
-    doc.gen = { key: genKey(doc), done: 0, total: chunks.length, samples: 0, rate: 24000 };
-    doc.position = 0;
-    await putDoc(doc);
-  }
-  else doc = await reconcileProgress(doc);
-  if (doc.gen.done >= doc.gen.total) { refresh(); return; }
-  const remaining = doc.chunks.slice(doc.gen.done);
-  const allChunks = doc.chunks;
-  job = {
-    jobId: Date.now(), docId: doc.id, genMs: 0, audioSec: 0, charsDone: 0, gen: { ...doc.gen }, lastSave: Date.now(), chunks: allChunks,
-    charsTotal: remaining.reduce((n, c) => n + c.text.length, 0),
-  };
-  acquireWakeLock();
-  refresh();
-  ensureModel().catch(() => {}); // for the download progress display
-  send({
-    type: "generate", jobId: job.jobId, voice: doc.voice, speed: doc.speed,
-    chunks: remaining.map((c, k) => ({ i: doc.gen.done + k, text: c.text })),
-  });
-}
-
-function stopGeneration() {
-  if (!job) return;
-  worker?.postMessage({ type: "cancel", jobId: job.jobId });
-  const { docId, gen } = job;
-  writeQueue = writeQueue.then(() => saveProgress(docId, gen)).then(() => refresh()).catch(() => {});
-  job = null;
-  releaseWakeLock();
-  refresh();
-}
-
-function onChunk(m) {
-  writeQueue = writeQueue.then(async () => {
-    if (!job || m.jobId !== job.jobId) return;
-    const docId = job.docId;
-    if (!job.chunks) job.chunks = (await getDocRaw(docId))?.chunks || [];
-    const c = job.chunks[m.i];
-    const pcm = toInt16(m.samples, Math.round(m.rate * (c?.pauseAfter || 0)));
-    // Stored as a Blob so the browser can keep it on disk instead of in memory.
-    await putChunk({ key: docId + ":" + m.i, docId, i: m.i, pcm: new Blob([pcm.buffer]), samples: pcm.length });
-    if (!job || job.jobId !== m.jobId) return;
-    job.gen.done = m.i + 1;
-    job.gen.samples += pcm.length;
-    job.gen.rate = m.rate;
-    if (Date.now() - job.lastSave > 10000) { job.lastSave = Date.now(); await saveProgress(docId, job.gen); }
-    const doc = await getDoc(docId);
-    if (job && job.jobId === m.jobId) {
-      job.genMs += m.ms;
-      job.audioSec += m.samples.length / m.rate;
-      job.charsDone += c ? c.text.length : 0;
-      if (m.skipped) job.skipped = (job.skipped || 0) + 1;
-      if (m.mem) job.mem = m.mem;
-    }
-    if (model.status !== "ready") { model.status = "ready"; model.engine = currentEngine(); }
-    if (playerState.waiting && playerState.docId === doc.id) resumeAfterWait(doc);
-    updateLive(doc);
-  }).catch((err) => {
-    console.error(err);
-    if (job) { worker?.postMessage({ type: "cancel", jobId: job.jobId }); job = null; releaseWakeLock(); }
-    toast("Couldn't save audio. Your phone may be low on storage.", 6000);
-    refresh();
-  });
-}
-
-function onJobDone(m) {
-  writeQueue = writeQueue.then(async () => {
-    if (!job || m.jobId !== job.jobId) return;
-    await saveProgress(job.docId, job.gen);
-    const doc = await getDoc(job.docId);
-    const skipped = job.skipped || 0;
-    job = null;
-    releaseWakeLock();
-    if (doc && doc.gen && doc.gen.done >= doc.gen.total) {
-      toast(`“${doc.title}” is ready to listen.` + (skipped ? ` ${skipped} short part${skipped > 1 ? "s" : ""} couldn't be read and ${skipped > 1 ? "were" : "was"} skipped.` : ""), skipped ? 6000 : 3200);
-    }
-    refresh();
-  });
-}
-
-/** Write in-memory progress to the saved document (only if it's still for the same text and voice). */
-async function saveProgress(docId, gen) {
-  const d = await getDocRaw(docId);
-  if (d && d.gen && d.gen.key === gen.key) { d.gen = { ...gen }; await putDoc(d); }
-}
-
-/** After a crash or reload, work out progress from the audio that was actually saved. */
-async function reconcileProgress(doc) {
-  if (!doc.gen) return doc;
-  const chunks = await getChunks(doc.id);
-  let done = 0, samples = 0;
-  for (; done < chunks.length && chunks[done].i === done; done++) samples += chunks[done].samples;
-  if (done !== doc.gen.done || samples !== doc.gen.samples) {
-    doc.gen.done = done; doc.gen.samples = samples;
-    await putDoc(doc);
-  }
-  return doc;
-}
-
-let wakeLock = null;
-async function acquireWakeLock() {
-  try { if ("wakeLock" in navigator && !wakeLock) { wakeLock = await navigator.wakeLock.request("screen"); wakeLock.addEventListener("release", () => (wakeLock = null)); } } catch {}
-}
-function releaseWakeLock() { try { wakeLock?.release(); } catch {} wakeLock = null; }
-document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && job) acquireWakeLock(); });
-
-// ---------- player ----------
-const player = $("#player");
-const previewPlayer = $("#previewPlayer");
-let playerState = { docId: null, url: null, samples: 0, rate: 24000, blob: null, waiting: false };
-let lastSave = 0;
-let loadingSrc = false; // true while swapping sources, so we don't save a bogus position
-
-function unloadPlayer() {
-  player.pause();
-  if (playerState.url) URL.revokeObjectURL(playerState.url);
-  playerState = { docId: null, url: null, samples: 0, rate: 24000, blob: null, waiting: false };
-  player.removeAttribute("src");
-  player.load();
-}
-
-function waitFor(el, event, ms = 8000) {
-  return new Promise((resolve) => {
-    const done = () => { clearTimeout(t); el.removeEventListener(event, done); resolve(); };
-    const t = setTimeout(done, ms);
-    el.addEventListener(event, done, { once: true });
-  });
-}
-
-/** Build one WAV from every finished chunk and point the player at it. */
-async function loadPlayer(doc, startAt = 0) {
-  const chunks = await getChunks(doc.id);
-  const parts = [];
-  let samples = 0;
-  for (let k = 0; k < chunks.length && chunks[k].i === k; k++) { parts.push(chunks[k].pcm); samples += chunks[k].samples; }
-  if (!samples) return false;
-  const rate = doc.gen?.rate || 24000;
-  const blob = new Blob([wavHeader(samples, rate), ...parts], { type: "audio/wav" });
-  if (playerState.url) URL.revokeObjectURL(playerState.url);
-  const url = URL.createObjectURL(blob);
-  playerState = { docId: doc.id, url, samples, rate, blob, waiting: false };
-  loadingSrc = true;
-  try {
-    player.src = url;
-    player.load();
-    await waitFor(player, "loadedmetadata");
-    player.playbackRate = player.defaultPlaybackRate = settings.get("rate", 1);
-    const dur = samples / rate;
-    if (startAt > 0 && startAt < dur - 1) player.currentTime = startAt;
-  } finally {
-    loadingSrc = false;
-  }
-  return true;
-}
-
-async function playDoc(docId) {
-  const isLoaded = playerState.docId === docId && playerState.url;
-  if (isLoaded && !playerState.waiting) {
-    const doc = await peekDoc(docId);
-    // If more audio was made since we loaded, rebuild first (keeps position).
-    if (doc && doc.gen && doc.gen.samples > playerState.samples && player.paused) {
-      const t = player.currentTime;
-      player.src = SILENT_URL; player.play().catch(() => {}); // keep iOS's permission to play
-      await loadPlayer(doc, t);
-    }
-    player.play().catch((e) => toast("Couldn't start playback: " + e.message));
-    return;
-  }
-  // Unlock the element during the tap, then load the real audio.
-  player.src = SILENT_URL;
-  player.play().catch(() => {});
-  const doc = await getDoc(docId);
-  if (!doc || !(await loadPlayer(doc, doc.position || 0))) { toast("No audio yet."); return; }
-  player.play().catch((e) => toast("Couldn't start playback: " + e.message));
-}
-
-// Cache of the last-read doc so the play button can act within the tap.
-const docCache = new Map();
-async function peekDoc(id) { const d = await getDoc(id); if (d) docCache.set(id, d); return d; }
-
-async function resumeAfterWait(doc) {
-  const t = playerState.samples / playerState.rate;
-  await loadPlayer(doc, t);
-  player.play().catch(() => {});
-}
-
-player.addEventListener("ended", async () => {
-  const doc = playerState.docId && (await getDoc(playerState.docId));
-  if (!doc) return;
-  if (doc.gen && doc.gen.samples > playerState.samples) {
-    await resumeAfterWait(doc);
-  } else if (job && job.docId === doc.id) {
-    playerState.waiting = true;
-    toast("You've caught up. It'll keep playing as soon as more audio is ready.");
-    updateLive(doc);
-  } else {
-    doc.position = 0; await putDoc(doc);
-    updateLive(doc);
-  }
-});
-player.addEventListener("timeupdate", () => {
-  updatePlayerUI();
-  const now = Date.now();
-  if (now - lastSave > 5000 && playerState.docId && !player.paused && !loadingSrc && player.src !== SILENT_URL) {
-    lastSave = now;
-    const id = playerState.docId, pos = player.currentTime;
-    getDoc(id).then((d) => { if (d) { d.position = pos; return putDoc(d); } }).catch(() => {});
-  }
-});
-["play", "pause"].forEach((ev) => player.addEventListener(ev, () => {
-  updatePlayerUI();
-  if (ev === "play") setMediaSession();
-  if (ev === "pause" && playerState.docId) {
-    const id = playerState.docId, pos = player.currentTime;
-    if (loadingSrc || player.src === SILENT_URL) return;
-    getDoc(id).then((d) => { if (d) { d.position = pos; return putDoc(d); } }).catch(() => {});
-  }
-}));
-
-function seekBy(delta) {
-  if (!playerState.url) return;
-  const max = playerState.samples / playerState.rate;
-  player.currentTime = Math.max(0, Math.min(max - 0.2, player.currentTime + delta));
-}
-
-async function setMediaSession() {
-  if (!("mediaSession" in navigator) || !playerState.docId) return;
-  const doc = await getDoc(playerState.docId);
-  try {
-    navigator.mediaSession.metadata = new MediaMetadata({
-      title: doc?.title || "Reader",
-      artist: "Kokoro Reader · " + voiceName(doc?.voice),
-      artwork: [{ src: new URL("icons/icon-512.png", location.href).href, sizes: "512x512", type: "image/png" }],
-    });
-    navigator.mediaSession.setActionHandler("play", () => player.play());
-    navigator.mediaSession.setActionHandler("pause", () => player.pause());
-    navigator.mediaSession.setActionHandler("seekbackward", () => seekBy(-15));
-    navigator.mediaSession.setActionHandler("seekforward", () => seekBy(30));
-    navigator.mediaSession.setActionHandler("seekto", (d) => { if (d.seekTime != null) player.currentTime = d.seekTime; });
-  } catch {}
-}
-
-async function preview(voice, speed) {
-  previewPlayer.src = SILENT_URL;
-  previewPlayer.play().catch(() => {});
-  previewing = true;
-  updatePreviewButton();
-  try {
-    const id = uid();
-    const p = new Promise((resolve, reject) => previewWaiters.set(id, { resolve, reject }));
-    ensureModel().catch(() => {});
-    send({ type: "preview", id, voice, speed,
-      text: `Hi, I'm ${voiceName(voice)}. I'll read your documents to you, so you can listen on the go.` });
-    const m = await p;
-    const pcm = toInt16(m.samples);
-    previewPlayer.src = URL.createObjectURL(new Blob([wavHeader(pcm.length, m.rate), pcm.buffer], { type: "audio/wav" }));
-    if (!player.paused) player.pause();
-    await previewPlayer.play();
-  } catch (e) {
-    toast("Couldn't play the sample: " + e.message);
-  } finally {
-    previewing = false;
-    updatePreviewButton();
-  }
-}
-
-let previewing = false;
-function updatePreviewButton() {
-  const b = $("#previewBtn"), st = $("#engineStatus");
-  if (b) {
-    b.disabled = previewing;
-    b.innerHTML = previewing ? (model.status === "ready" ? "Making…" : "Loading…") : ICON.speaker + " Sample";
-  }
-  if (st) st.textContent = previewing && model.status !== "ready" ? loadingText() + " (first time only)" : "";
-}
-
-function shareAudio(doc) {
-  if (playerState.docId !== doc.id || !playerState.blob) { toast("Open the player first, then try again."); return; }
-  const name = (doc.title || "audio").replace(/[\\/:*?"<>|]+/g, " ").trim().slice(0, 80) || "audio";
-  const file = new File([playerState.blob], name + ".wav", { type: "audio/wav" });
-  if (navigator.canShare && navigator.canShare({ files: [file] })) {
-    navigator.share({ files: [file], title: doc.title }).catch(() => {});
-  } else {
-    const a = document.createElement("a");
-    a.href = playerState.url; a.download = file.name;
-    document.body.appendChild(a); a.click(); a.remove();
-  }
-}
-
-// ---------- views ----------
-function header(title, left = "", right = "") {
-  return `<header class="bar"><div class="left">${left}</div><h1>${esc(title)}</h1><div class="right">${right}</div></header>`;
-}
-
-function statusPill(doc) {
-  if (job && job.docId === doc.id) return `<span class="pill busy">Making audio</span>`;
-  if (!doc.gen || !doc.gen.samples) return `<span class="pill">No audio yet</span>`;
-  if (!audioIsCurrent(doc)) return `<span class="pill">Out of date</span>`;
-  if (doc.gen.done < doc.gen.total) return `<span class="pill busy">${Math.floor((100 * doc.gen.done) / doc.gen.total)}%</span>`;
-  return `<span class="pill ready">${fmtTime(doc.gen.samples / doc.gen.rate)}</span>`;
-}
-
-async function viewLibrary() {
-  const docs = await allDocs();
-  const right = `<button class="navbtn" data-go="#/settings" aria-label="Settings">${ICON.gear}</button>
-                 <button class="navbtn" data-go="#/new" aria-label="New">${ICON.plus}</button>`;
-  const list = docs.length
-    ? `<div class="card" style="padding:4px 12px"><ul class="doclist">${docs.map((d) => {
-        const w = wordCount(d.text);
-        return `<li><button data-go="#/doc/${d.id}">
-          <div class="grow"><div class="t">${esc(d.title)}</div>
-          <div class="m">${w.toLocaleString()} words · ${fmtMins((w / 155) * 60)}</div></div>
-          ${statusPill(d)}${ICON.chev}</button></li>`;
-      }).join("")}</ul></div>`
-    : `<div class="card empty">${ICON.doc}<h2 style="margin:10px 0 6px">Nothing here yet</h2>
-        <p class="muted" style="margin:0 0 16px">Paste text or import a .txt or .md file, and it'll be read aloud with a natural voice. Everything stays on your phone.</p>
-        <button class="btn primary" data-go="#/new">${ICON.plus} Add text</button></div>`;
-  app.innerHTML = header("", "", right) + `<div class="wrap"><div class="big-title">Reader</div>${list}
-    <p class="muted tiny" style="text-align:center">Voices by Kokoro, running on your device.</p></div>`;
-}
-
-async function viewEditor(id) {
-  const existing = id ? await getDoc(id) : null;
-  const doc = existing || { title: "", text: "", markdown: true };
-  app.innerHTML = header(existing ? "Edit" : "New",
-    `<button class="navbtn" data-back>Cancel</button>`,
-    `<button class="navbtn" id="saveBtn" style="font-weight:600">Save</button>`) +
-    `<div class="wrap stack" style="margin-top:8px">
-      <div><label class="field" for="title">Title</label>
-        <input type="text" id="title" placeholder="e.g. Auth module overview" value="${esc(doc.title)}" autocomplete="off"></div>
-      <div class="row wrapok">
-        <button class="btn ghost" id="importBtn">Import file…</button>
-        <button class="btn ghost" id="pasteBtn">Paste</button>
-        <input type="file" id="fileInput" accept=".txt,.md,.markdown,.text,text/plain,text/markdown" multiple class="hidden">
-      </div>
-      <div><label class="field" for="text">Text</label>
-        <textarea id="text" placeholder="Paste or type the text you want to hear…">${esc(doc.text)}</textarea>
-        <div class="muted small" id="count" style="margin-top:6px"></div></div>
-      <label class="check"><input type="checkbox" id="md" ${doc.markdown ? "checked" : ""}>
-        <span>Clean up Markdown <span class="muted small">(skip code blocks, links and symbols)</span></span></label>
-      ${existing && existing.gen && existing.gen.samples ? `<div class="warn">Changing the text means the audio will need to be made again.</div>` : ""}
-    </div>`;
-
-  const ta = $("#text"), title = $("#title"), count = $("#count");
-  const upd = () => { const w = wordCount(ta.value); count.textContent = w ? `${w.toLocaleString()} words · ${fmtMins((w / 155) * 60)} to listen` : ""; };
-  ta.addEventListener("input", upd); upd();
-
-  $("#pasteBtn").onclick = async () => {
-    try {
-      const t = await navigator.clipboard.readText();
-      if (!t) return toast("Clipboard is empty.");
-      ta.value = ta.value ? ta.value + "\n\n" + t : t; upd();
-    } catch { toast("Paste was blocked. Long-press in the text box and choose Paste instead."); }
-  };
-  $("#importBtn").onclick = () => $("#fileInput").click();
-  $("#fileInput").onchange = async (e) => {
-    const files = [...e.target.files];
-    if (!files.length) return;
-    if (files.length === 1 || existing) {
-      const f = files[0];
-      ta.value = await f.text(); upd();
-      if (!title.value.trim()) title.value = f.name.replace(/\.[^.]+$/, "").replace(/[-_]+/g, " ");
-      $("#md").checked = !/\.txt$/i.test(f.name) || $("#md").checked;
-    } else {
-      for (const f of files) await saveNewDoc(f.name.replace(/\.[^.]+$/, "").replace(/[-_]+/g, " "), await f.text(), !/\.txt$/i.test(f.name));
-      toast(`Imported ${files.length} files.`);
-      location.hash = "#/";
-    }
-  };
-  $("#saveBtn").onclick = async () => {
-    const text = ta.value.trim();
-    if (!text) return toast("Add some text first.");
-    const t = title.value.trim() || text.split("\n")[0].replace(/^#+\s*/, "").slice(0, 60) || "Untitled";
-    if (existing) {
-      const d = await getDoc(existing.id);
-      Object.assign(d, { title: t, text, markdown: $("#md").checked, updatedAt: Date.now() });
-      await putDoc(d);
-      location.replace("#/doc/" + d.id);
-    } else {
-      const d = await saveNewDoc(t, text, $("#md").checked);
-      location.replace("#/doc/" + d.id);
-    }
-  };
-}
-
-async function saveNewDoc(title, text, markdown) {
-  const d = {
-    id: uid(), title, text, markdown, voice: settings.get("voice", "af_heart"), speed: settings.get("speed", 1),
-    createdAt: Date.now(), updatedAt: Date.now(), gen: null, chunks: [], position: 0,
-  };
-  await putDoc(d);
-  try { navigator.storage?.persist?.(); } catch {}
-  return d;
-}
-
-async function viewDoc(id) {
-  let doc = await peekDoc(id);
-  if (!doc) { location.replace("#/"); return; }
-  if (!(job && job.docId === id) && doc.gen && doc.gen.done < doc.gen.total && audioIsCurrent(doc)) {
-    doc = await reconcileProgress(doc); docCache.set(id, doc);
-  }
-  const w = wordCount(doc.text);
-  app.innerHTML = header("",
-    `<button class="navbtn" data-go="#/">${ICON.back} Library</button>`,
-    `<button class="navbtn" data-go="#/edit/${doc.id}">Edit</button>`) +
-    `<div class="wrap">
-      <div class="big-title" style="font-size:26px;margin-bottom:4px">${esc(doc.title)}</div>
-      <div class="muted small" style="margin-bottom:14px">${w.toLocaleString()} words · ${fmtMins((w / 155) * 60)}</div>
-      <div class="card stack">
-        <div><label class="field" for="voice">Voice</label>
-          <div class="row"><select id="voice">${VOICES.map((v) => `<option value="${v[0]}" ${v[0] === doc.voice ? "selected" : ""}>${v[1]}${v[2] ? " · " + v[2] : ""}</option>`).join("")}</select>
-          <button class="btn" id="previewBtn" style="flex:none;min-width:112px">${ICON.speaker} Sample</button></div>
-          <div class="muted small" id="engineStatus" style="margin-top:6px"></div></div>
-        <div><label class="field" for="speed">Reading speed</label>
-          <select id="speed">${SPEEDS.map((s) => `<option value="${s}" ${s === doc.speed ? "selected" : ""}>${s === 1 ? "Normal" : s + "×"}</option>`).join("")}</select></div>
-      </div>
-      <div class="card" id="gencard"></div>
-      <div class="card player hidden" id="playercard">
-        <input type="range" id="scrub" min="0" max="1" step="0.1" value="0" aria-label="Position">
-        <div class="time"><span id="tcur">0:00</span><span id="tdur">0:00</span></div>
-        <div class="controls">
-          <button class="roundbtn" id="b15" aria-label="Back 15 seconds">${ICON.back15}<span class="lbl">15</span></button>
-          <button class="roundbtn playbtn" id="playBtn" aria-label="Play">${ICON.play}</button>
-          <button class="roundbtn" id="f30" aria-label="Forward 30 seconds">${ICON.fwd30}<span class="lbl">30</span></button>
-        </div>
-        <div class="row" style="margin-top:10px">
-          <button class="rate" id="rateBtn">${settings.get("rate", 1)}×</button>
-          <span class="muted tiny" id="waitNote"></span>
-          <span class="spacer"></span>
-          <button class="navbtn" id="shareBtn">${ICON.share} Save audio</button>
-        </div>
-      </div>
-      <details class="card"><summary>Text</summary>
-        <div class="textpreview" style="margin-top:10px">${esc(doc.text.slice(0, 20000))}${doc.text.length > 20000 ? "…" : ""}</div></details>
-      <button class="btn danger block" id="delBtn">Delete</button>
-    </div>`;
-
-  const saveField = async (patch) => {
-    const d = await getDoc(id); Object.assign(d, patch); await putDoc(d); docCache.set(id, d);
-    updateLive(d);
-  };
-  $("#voice").onchange = (e) => { settings.set("voice", e.target.value); saveField({ voice: e.target.value }); };
-  $("#speed").onchange = (e) => { settings.set("speed", +e.target.value); saveField({ speed: +e.target.value }); };
-  $("#previewBtn").onclick = () => preview($("#voice").value, +$("#speed").value);
-  $("#playBtn").onclick = () => {
-    if (playerState.docId === id && !player.paused) player.pause();
-    else playDoc(id);
-  };
-  $("#b15").onclick = () => seekBy(-15);
-  $("#f30").onclick = () => seekBy(30);
-  $("#rateBtn").onclick = (e) => {
-    const r = RATES[(RATES.indexOf(settings.get("rate", 1)) + 1) % RATES.length];
-    settings.set("rate", r);
-    player.playbackRate = player.defaultPlaybackRate = r;
-    e.currentTarget.textContent = r + "×";
-  };
-  const scrub = $("#scrub");
-  scrub.addEventListener("input", () => {
-    if (playerState.docId !== id) return;
-    player.currentTime = Math.min(+scrub.value, playerState.samples / playerState.rate - 0.2);
-  });
-  $("#shareBtn").onclick = async () => shareAudio(docCache.get(id) || (await getDoc(id)));
-  $("#delBtn").onclick = async () => {
-    if (!confirm(`Delete “${doc.title}” and its audio?`)) return;
-    if (job && job.docId === id) stopGeneration();
-    if (playerState.docId === id) unloadPlayer();
-    await deleteDoc(id);
-    location.replace("#/");
-  };
-
-  updateLive(doc);
-  // Have the audio ready so Play works instantly (unless something else is playing).
-  if (doc.gen && doc.gen.samples && playerState.docId !== id && (player.paused || !playerState.docId)) {
-    await loadPlayer(doc, doc.position || 0);
-    updatePlayerUI();
-  }
-}
-
-function genCardHTML(doc) {
-  const g = doc.gen;
-  const current = audioIsCurrent(doc);
-  const running = job && job.docId === doc.id;
-  const pct = g && current ? (100 * g.done) / g.total : 0;
-  if (running) {
-    let line;
-    if (job.charsDone === 0) {
-      line = model.status === "ready" ? "Starting…" : loadingText() + (model.loaded ? " (first time only)" : "");
-    } else {
-      const leftSec = ((job.charsTotal - job.charsDone) * (job.genMs / job.charsDone)) / 1000;
-      line = `Part ${g.done} of ${g.total} · ${leftSec < 60 ? "under a minute" : "about " + Math.ceil(leftSec / 60) + " min"} left`;
-    }
-    return `<div class="stack"><div class="row"><strong>Making audio</strong><span class="spacer"></span><span class="muted small">${Math.floor(pct)}%</span></div>
-      <div class="progress"><div style="width:${pct}%"></div></div>
-      <div class="muted small">${esc(line)}</div>
-      <div class="muted tiny">Keep this screen open while it works. You can start listening now; playback continues as more is ready.</div>
-      <button class="btn ghost block" id="stopBtn">Stop</button></div>`;
-  }
-  if (g && current && g.done >= g.total) {
-    return `<div class="row"><strong>Audio ready</strong><span class="spacer"></span><span class="muted small">${fmtTime(g.samples / g.rate)} · ${esc(voiceName(doc.voice))}</span></div>`;
-  }
-  if (g && current && g.done > 0) {
-    return `<div class="stack"><div class="row"><strong>Partly made</strong><span class="spacer"></span><span class="muted small">${Math.floor(pct)}%</span></div>
-      <div class="progress"><div style="width:${pct}%"></div></div>
-      <div class="row"><button class="btn primary" style="flex:1" id="genBtn">Continue</button>
-      <button class="btn ghost" id="restartBtn">Start over</button></div></div>`;
-  }
-  const stale = g && g.samples && !current;
-  return `<div class="stack">
-    ${stale ? `<div class="warn">The text, voice or speed changed since this audio was made. You can still play the old version, or make it again.</div>` : ""}
-    <button class="btn primary block" id="genBtn">${stale ? "Make audio again" : "Make audio"}</button>
-    <div class="muted tiny">${model.status === "ready" ? "Runs on your phone." : "The first time, this downloads the voice model (about 90 MB). After that it works offline."}</div></div>`;
-}
-
-function updateLive(doc) {
-  const route = parseRoute();
-  if (route.name === "library") { viewLibrary(); return; }
-  if (route.name !== "doc") return;
-  const id = route.id;
-  if (doc && doc.id !== id) return;
-  const render = (d) => {
-    const card = $("#gencard");
-    if (!card || !d) return;
-    card.innerHTML = genCardHTML(d);
-    $("#genBtn") && ($("#genBtn").onclick = () => startGeneration(id));
-    $("#restartBtn") && ($("#restartBtn").onclick = () => startGeneration(id, { restart: true }));
-    $("#stopBtn") && ($("#stopBtn").onclick = () => stopGeneration());
-    $("#playercard")?.classList.toggle("hidden", !(d.gen && d.gen.samples));
-    docCache.set(id, d);
-    updatePlayerUI();
-  };
-  if (doc) render(doc); else getDoc(id).then(render);
-}
-
-function updatePlayerUI() {
-  const route = parseRoute();
-  if (route.name !== "doc") return;
-  const d = docCache.get(route.id);
-  const pb = $("#playBtn");
-  if (!pb || !d) return;
-  const mine = playerState.docId === route.id;
-  const playing = mine && !player.paused && player.src !== SILENT_URL;
-  pb.innerHTML = playing ? ICON.pause : ICON.play;
-  pb.setAttribute("aria-label", playing ? "Pause" : "Play");
-  const total = d.gen ? d.gen.samples / (d.gen.rate || 24000) : 0;
-  const cur = mine ? player.currentTime : d.position || 0;
-  const scrub = $("#scrub");
-  scrub.max = Math.max(1, total);
-  if (document.activeElement !== scrub) scrub.value = Math.min(cur, total);
-  $("#tcur").textContent = fmtTime(cur);
-  const making = job && job.docId === d.id;
-  $("#tdur").textContent = fmtTime(total) + (making ? " so far" : "");
-  $("#waitNote").textContent = mine && playerState.waiting ? "Waiting for more audio…" : "";
-}
-
-async function viewSettings() {
-  const engine = currentEngine();
-  const hasGPU = "gpu" in navigator;
-  let usage = "";
-  try { const est = await navigator.storage.estimate(); usage = `Using ${fmtMB(est.usage || 0)} on this device.`; } catch {}
-  let persisted = false;
-  try { persisted = await navigator.storage.persisted(); } catch {}
-  app.innerHTML = header("Settings", `<button class="navbtn" data-go="#/">${ICON.back} Library</button>`) +
-    `<div class="wrap" style="margin-top:8px">
-      <div class="card stack">
-        <strong>Speech engine</strong>
-        <div class="seg">
-          ${Object.entries(ENGINES).map(([id, e]) => `<label><input type="radio" name="engine" value="${id}" ${engine === id ? "checked" : ""} ${e.device === "webgpu" && !hasGPU ? "disabled" : ""}>
-            <div><div>${esc(e.name)}${id === DEFAULT_ENGINE ? ' <span class="muted small">(default)</span>' : ""}</div><div class="muted small">${esc(e.note)}</div></div></label>`).join("")}
-        </div>
-        <a class="btn ghost block" href="diag.html" style="text-decoration:none">Test which engines work on this phone</a>
-        <div class="muted small">Engine status: ${esc(model.status === "ready" ? "loaded" : model.status === "loading" ? "loading…" : model.status === "error" ? "error" : "not loaded yet")}</div>
-      </div>
-      <div class="card stack">
-        <strong>Storage</strong>
-        <div class="muted small">${esc(usage)} ${persisted ? "Storage is protected from automatic cleanup." : ""}</div>
-        <button class="btn ghost block" id="clearAudio">Delete all generated audio</button>
-        <button class="btn ghost block" id="clearModel">Delete the downloaded voice model</button>
-      </div>
-      <div class="card stack small">
-        <strong>Tips</strong>
-        <div class="muted">Add this page to your Home Screen (Share → Add to Home Screen) to use it like an app. The Home Screen app keeps its own library, separate from Safari.</div>
-        <div class="muted">Audio plays with the screen locked, and lock-screen controls work. Making audio needs the screen on.</div>
-      </div>
-    </div>`;
-  document.querySelectorAll('input[name="engine"]').forEach((r) => (r.onchange = () => {
-    if (job) { toast("Stop the current audio job first."); r.checked = false; $(`input[value="${engine}"]`).checked = true; return; }
-    settings.set("engine", r.value);
-    createWorker();
-    toast(`Switched to ${ENGINES[r.value].name}. It loads the next time you make audio.`);
+function renderChapters() {
+  const list = $("#chapters");
+  list.innerHTML = chapters.map((c, i) => {
+    const w = words(speakable(c.text));
+    return `<li><div class="line">
+      <span class="num">${i + 1}</span>
+      <input type="text" class="grow" data-title="${i}" value="${esc(c.title)}" aria-label="Chapter ${i + 1} title">
+      <span class="meta">${w.toLocaleString()} words · ${fmtMins(w * secPerWord).replace("about ", "~")}</span>
+      <button class="icon" data-up="${i}" title="Move up" ${i ? "" : "disabled"}>↑</button>
+      <button class="icon" data-down="${i}" title="Move down" ${i < chapters.length - 1 ? "" : "disabled"}>↓</button>
+      <button class="icon" data-merge="${i}" title="Merge into the chapter above" ${i ? "" : "disabled"}>⤒</button>
+      <button class="icon" data-del="${i}" title="Remove chapter">×</button>
+    </div>
+    <details><summary>What will be read</summary><pre>${esc(speakable(c.text).slice(0, 3000))}${speakable(c.text).length > 3000 ? "…" : ""}</pre></details></li>`;
+  }).join("");
+  list.querySelectorAll("[data-title]").forEach((el) => (el.oninput = () => (chapters[+el.dataset.title].title = el.value)));
+  const move = (i, j) => { [chapters[i], chapters[j]] = [chapters[j], chapters[i]]; renderChapters(); };
+  list.querySelectorAll("[data-up]").forEach((b) => (b.onclick = () => move(+b.dataset.up, +b.dataset.up - 1)));
+  list.querySelectorAll("[data-down]").forEach((b) => (b.onclick = () => move(+b.dataset.down, +b.dataset.down + 1)));
+  list.querySelectorAll("[data-merge]").forEach((b) => (b.onclick = () => {
+    const i = +b.dataset.merge;
+    chapters[i - 1].text += `\n\n## ${chapters[i].title}\n\n${chapters[i].text}`;
+    chapters.splice(i, 1); renderChapters();
   }));
-  $("#clearAudio").onclick = async () => {
-    if (!confirm("Delete the audio for every document? Your text stays.")) return;
-    if (job) stopGeneration();
-    unloadPlayer();
-    for (const d of await allDocs()) { await deleteChunks(d.id); d.gen = null; d.position = 0; await putDoc(d); }
-    toast("Audio deleted."); viewSettings();
-  };
-  $("#clearModel").onclick = async () => {
-    if (!confirm("Delete the downloaded voice model? It will download again next time.")) return;
-    if (job) stopGeneration();
-    try { for (const k of await caches.keys()) if (/transformers|kokoro/i.test(k)) await caches.delete(k); } catch {}
-    createWorker();
-    toast("Voice model deleted."); viewSettings();
-  };
+  list.querySelectorAll("[data-del]").forEach((b) => (b.onclick = () => { chapters.splice(+b.dataset.del, 1); renderChapters(); if (!chapters.length) docsChanged(); }));
+  const w = chapters.reduce((n, c) => n + words(speakable(c.text)), 0);
+  $("#total").innerHTML = `<strong>${chapters.length} chapter${chapters.length === 1 ? "" : "s"}</strong> · ${w.toLocaleString()} words · ${fmtMins(estimateSeconds())} of listening`;
+  updateEstimate();
 }
 
-// ---------- routing ----------
-function parseRoute() {
-  const h = location.hash || "#/";
-  let m;
-  if ((m = h.match(/^#\/doc\/(.+)$/))) return { name: "doc", id: decodeURIComponent(m[1]) };
-  if ((m = h.match(/^#\/edit\/(.+)$/))) return { name: "edit", id: decodeURIComponent(m[1]) };
-  if (h === "#/new") return { name: "new" };
-  if (h === "#/settings") return { name: "settings" };
-  return { name: "library" };
+// ---------- speech engine pool ----------
+let pool = null;
+
+async function pickDevice() {
+  const want = $("#engine").value;
+  if (want === "wasm") return "wasm";
+  let ok = false;
+  try { ok = !!(navigator.gpu && (await navigator.gpu.requestAdapter())); } catch {}
+  if (want === "webgpu" && !ok) throw new Error("This browser can't use the graphics card (WebGPU). Choose Processor or Automatic.");
+  return ok ? "webgpu" : "wasm";
 }
-async function refresh() {
-  const r = parseRoute();
-  if (r.name === "doc") {
-    if ($("#gencard")) updateLive(); else await viewDoc(r.id);
-  } else if (r.name === "library") await viewLibrary();
-  else if (r.name === "settings") await viewSettings();
-}
-async function route() {
-  const r = parseRoute();
-  window.scrollTo(0, 0);
-  if (r.name === "doc") await viewDoc(r.id);
-  else if (r.name === "edit") await viewEditor(r.id);
-  else if (r.name === "new") await viewEditor(null);
-  else if (r.name === "settings") await viewSettings();
-  else await viewLibrary();
-}
-window.addEventListener("hashchange", route);
-document.addEventListener("click", (e) => {
-  const go = e.target.closest("[data-go]");
-  if (go) { e.preventDefault(); location.hash = go.dataset.go; return; }
-  if (e.target.closest("[data-back]")) { e.preventDefault(); history.length > 1 ? history.back() : (location.hash = "#/"); }
-});
-window.addEventListener("beforeunload", (e) => { if (job) { e.preventDefault(); e.returnValue = ""; } });
 
-// ---------- start ----------
-const WELCOME = `# Welcome to Reader
-
-This app reads your text out loud with a natural voice, and it runs entirely on your phone. Nothing you paste here is sent anywhere.
-
-## How to use it
-
-Tap the plus button in the library to paste text or import a text or Markdown file. Open a document, pick a voice, and tap Make audio. The first time, the app downloads the voice model, which is about ninety megabytes. After that, it works offline.
-
-You can start listening as soon as the first part is ready. Once the audio is made, it keeps playing with your screen locked, and you can use the lock screen controls to pause or skip.
-
-## Tips
-
-Markdown is cleaned up automatically, so headings, links and code blocks won't be read as symbols. If you want to keep a copy of the audio, tap Save audio to put it in the Files app.`;
-
-async function start() {
-  createWorker();
-  if (!settings.get("seeded", false)) {
-    settings.set("seeded", true);
-    if (!(await allDocs()).length) await saveNewDoc("Welcome to Reader", WELCOME, true);
+class Pool {
+  constructor(device, size) {
+    this.device = device; this.size = size; this.workers = []; this.queue = []; this.nextId = 1; this.dead = false;
   }
-  await route();
-  if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "127.0.0.1")) {
-    navigator.serviceWorker.register("sw.js").catch(() => {});
+  spawn() {
+    const w = new Worker(new URL("./tts-worker.js", import.meta.url), { type: "module" });
+    w.busy = null;
+    w.onmessage = ({ data: m }) => {
+      if (m.type === "progress") this.onProgress?.(m);
+      else if (m.type === "loaded") w.loaded?.resolve();
+      else if (m.type === "error" && m.during === "load") w.loaded?.reject(new Error(m.message));
+      else if (m.type === "audio" || m.type === "error") {
+        const job = w.busy; w.busy = null;
+        if (job) m.type === "audio" ? job.resolve(m) : job.reject(new Error(m.message));
+        this.pump();
+      }
+    };
+    w.onerror = (e) => { e.preventDefault?.(); const err = new Error("The speech engine stopped unexpectedly."); w.loaded?.reject(err); w.busy?.reject(err); w.busy = null; };
+    this.workers.push(w);
+    return w;
+  }
+  load(w) {
+    return new Promise((resolve, reject) => { w.loaded = { resolve, reject }; w.postMessage({ type: "load", device: this.device }); });
+  }
+  async start() {
+    // Load one engine first (this downloads the model), then the rest from the browser cache.
+    await this.load(this.spawn());
+    const more = Array.from({ length: this.size - 1 }, () => this.spawn());
+    await Promise.all(more.map((w) => this.load(w).catch(() => { w.terminate(); this.workers.splice(this.workers.indexOf(w), 1); })));
+    this.ready = true;
+  }
+  synth(text, voice, speed) {
+    return new Promise((resolve, reject) => { this.queue.push({ text, voice, speed, resolve, reject }); this.pump(); });
+  }
+  pump() {
+    for (const w of this.workers) {
+      if (w.busy || !this.queue.length) continue;
+      const job = this.queue.shift();
+      w.busy = job;
+      w.postMessage({ type: "synth", id: this.nextId++, text: job.text, voice: job.voice, speed: job.speed });
+    }
+  }
+  terminate() {
+    this.dead = true;
+    for (const w of this.workers) { w.terminate(); w.busy?.reject(new Error("stopped")); }
+    for (const j of this.queue) j.reject(new Error("stopped"));
+    this.workers = []; this.queue = [];
   }
 }
-start().catch((e) => {
-  console.error(e);
-  app.innerHTML = `<div class="wrap"><div class="card" style="margin-top:20px"><strong>Something went wrong.</strong><p class="muted">${esc(e.message)}</p>
-    <p class="muted small">If you're in a Private Browsing tab, open the page in a normal tab. Storage isn't available in private mode.</p></div></div>`;
-});
 
-// Exposed for testing in the browser console.
-window.__reader = { chunkText, getDoc, allDocs, getChunks, model, get job() { return job; }, get playerState() { return playerState; } };
+function resetPool() { pool?.terminate(); pool = null; $("#engineStatus").textContent = ""; }
+
+async function getPool() {
+  if (pool && pool.ready) return pool;
+  if (pool && pool.starting) return pool.starting;
+  const start = async (device) => {
+    const size = device === "webgpu" ? 1 : Math.max(1, Math.min(4, Math.floor((navigator.hardwareConcurrency || 2) / 2)));
+    const p = new Pool(device, size);
+    const label = device === "webgpu" ? "graphics card" : `processor (${size} thread${size > 1 ? "s" : ""})`;
+    p.onProgress = ({ loaded, total }) => {
+      const t = total > loaded ? total : (device === "webgpu" ? 326 : 92) * 1048576;
+      $("#engineStatus").textContent = `Downloading the voice model for the ${label}: ${fmtMB(loaded)} of ${total > loaded ? "" : "about "}${fmtMB(t)} (first time only)…`;
+    };
+    $("#engineStatus").textContent = `Starting the speech engine on the ${label}…`;
+    pool = p;
+    p.starting = p.start().then(() => p);
+    try {
+      await p.starting;
+    } catch (err) {
+      p.terminate(); pool = null;
+      throw err;
+    }
+    p.starting = null;
+    $("#engineStatus").textContent = `Speech engine ready on the ${label}.`;
+    return p;
+  };
+  const device = await pickDevice();
+  try {
+    return await start(device);
+  } catch (err) {
+    if (device === "webgpu" && $("#engine").value === "auto") {
+      $("#engineStatus").textContent = "The graphics card didn't work, so using the processor instead…";
+      return start("wasm");
+    }
+    $("#engineStatus").textContent = "";
+    throw err;
+  }
+}
+
+// ---------- sample ----------
+$("#sampleBtn").onclick = async () => {
+  const btn = $("#sampleBtn");
+  const audio = $("#sampleAudio");
+  btn.disabled = true; btn.textContent = "Loading…";
+  try {
+    const p = await getPool();
+    btn.textContent = "Making…";
+    const first = chapters.length ? makeChunks(toParagraphs(chapters[0].text, { markdown: true }), 220)[0]?.text : "";
+    const text = first || `Hi, I'm ${voiceName($("#voice").value)}. This is how your audiobook will sound.`;
+    const m = await p.synth(text, $("#voice").value, +$("#speed").value);
+    audio.src = URL.createObjectURL(new Blob([wavBytes(toInt16(m.samples), m.rate)], { type: "audio/wav" }));
+    await audio.play();
+  } catch (err) {
+    showError("Couldn't play a sample: " + err.message);
+  } finally {
+    btn.disabled = false; btn.textContent = "▶ Sample";
+  }
+};
+
+// ---------- making the audiobook ----------
+let run = null;
+let lastSpeed = pref.get("lastSpeed", null); // seconds of audio per second of work, from the last run
+// Seconds of audio per word at normal speed, including pauses. Learned from each finished book.
+let secPerWord = pref.get("secPerWord", 0.48);
+
+function estimateSeconds() {
+  const w = chapters.reduce((n, c) => n + words(speakable(c.text)), 0);
+  return (w * secPerWord + chapters.length * ($("#announce").checked ? 4 : 1.5)) / (+$("#speed").value || 1);
+}
+
+function updateEstimate() {
+  const audioSec = estimateSeconds();
+  $("#estimate").textContent = lastSpeed
+    ? `About ${fmtDur(audioSec)} of audio. On this computer that takes ${fmtMins(audioSec / lastSpeed)} to make.`
+    : `About ${fmtDur(audioSec)} of audio.`;
+}
+
+function toInt16(f32, pad = 0) {
+  const out = new Int16Array(f32.length + pad);
+  for (let i = 0; i < f32.length; i++) { const x = Math.max(-1, Math.min(1, f32[i])); out[i] = x < 0 ? x * 32768 : x * 32767; }
+  return out;
+}
+function wavBytes(pcm, rate) {
+  const b = new ArrayBuffer(44 + pcm.length * 2), v = new DataView(b);
+  const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  w(0, "RIFF"); v.setUint32(4, 36 + pcm.length * 2, true); w(8, "WAVE"); w(12, "fmt "); v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true);
+  v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, "data"); v.setUint32(40, pcm.length * 2, true);
+  new Int16Array(b, 44).set(pcm);
+  return b;
+}
+
+const SEGMENT_SECONDS = self.__abmSegmentSeconds || 300; // encode every 5 minutes so memory stays flat
+
+$("#createBtn").onclick = () => createBook().catch((err) => {
+  console.error(err);
+  if (run && !run.stopped) showError("Something went wrong: " + err.message);
+  endRun();
+});
+$("#stopBtn").onclick = () => { if (run) { run.stopped = true; resetPool(); run.writer.terminate(); endRun(); } };
+$("#againBtn").onclick = () => { $("#doneCard").classList.add("hidden"); $("#makeCard").scrollIntoView({ behavior: "smooth" }); };
+window.addEventListener("beforeunload", (e) => { if (run) { e.preventDefault(); e.returnValue = ""; } });
+
+async function createBook() {
+  if (!chapters.length || run) return;
+  showError("");
+  $("#doneCard").classList.add("hidden");
+  const voice = $("#voice").value, speed = +$("#speed").value, announce = $("#announce").checked;
+  const title = $("#bookTitle").value.trim() || "Audiobook";
+  const author = $("#author").value.trim();
+
+  // Plan every piece of speech up front.
+  const plan = chapters.map((c, ci) => {
+    const pieces = makeChunks(toParagraphs(c.text, { markdown: true }), 250);
+    if (announce) pieces.unshift({ text: `Chapter ${ci + 1}. ${c.title.replace(/[.!?:;]*$/, "")}.`, pauseAfter: 0.9 });
+    return { title: c.title || `Chapter ${ci + 1}`, pieces };
+  }).filter((c) => c.pieces.length);
+  const flat = plan.flatMap((c, ci) => c.pieces.map((p, k) => ({ ...p, ci, last: k === c.pieces.length - 1 })));
+  const totalChars = flat.reduce((n, p) => n + p.text.length, 0);
+
+  const writer = new AudiobookWriter();
+  run = { stopped: false, writer, started: performance.now() };
+  $("#makeIdle").classList.add("hidden");
+  $("#makeRunning").classList.remove("hidden");
+  setRun("Starting the speech engine…", 0, "");
+
+  const [p] = await Promise.all([getPool(), writer.load()]);
+  if (run.stopped) return;
+  const t0 = performance.now();
+  let rate = 24000, doneChars = 0, audioSec = 0;
+  let seg = [], segSamples = 0;
+  const marks = [];
+  let chapterStart = 0;
+
+  const flush = async () => {
+    if (!segSamples) return;
+    const pcm = new Int16Array(segSamples);
+    let o = 0;
+    for (const s of seg) { pcm.set(s, o); o += s.length; }
+    seg = []; segSamples = 0;
+    await writer.addSegment(pcm, rate);
+  };
+
+  // Keep every engine busy by asking for a few pieces ahead, then use them in order.
+  const ahead = Math.max(2, p.size * 2);
+  const pending = [];
+  let next = 0;
+  const fill = () => {
+    while (next < flat.length && pending.length < ahead) {
+      const piece = flat[next++];
+      const job = p.synth(piece.text, voice, speed);
+      job.catch(() => {}); // handled when awaited; avoids noise if the run is stopped
+      pending.push(job);
+    }
+  };
+  fill();
+  for (let i = 0; i < flat.length; i++) {
+    const piece = flat[i];
+    const m = await pending.shift();
+    fill();
+    if (run.stopped) return;
+    rate = m.rate;
+    const pause = piece.pauseAfter + (piece.last ? 1.5 : 0);
+    const pcm = toInt16(m.samples, Math.round(rate * pause));
+    seg.push(pcm); segSamples += pcm.length;
+    doneChars += piece.text.length;
+    audioSec += pcm.length / rate;
+    if (piece.last) {
+      await flush();
+      marks.push({ title: plan[piece.ci].title, start: chapterStart, end: writer.seconds });
+      chapterStart = writer.seconds;
+    } else if (segSamples >= rate * SEGMENT_SECONDS) {
+      await flush();
+    }
+    if (run.stopped) return;
+    const elapsed = (performance.now() - t0) / 1000;
+    const speedX = audioSec / elapsed;
+    const left = ((totalChars - doneChars) * elapsed) / doneChars;
+    setRun(`Chapter ${piece.ci + 1} of ${plan.length}: ${plan[piece.ci].title}`, doneChars / totalChars,
+      `${fmtDur(audioSec)} of audio made · ${speedX.toFixed(1)}× real time · ${left < 60 ? "under a minute" : fmtMins(left)} left`);
+  }
+
+  setRun("Packaging the audiobook…", 1, "Adding chapters and cover");
+  const cover = await makeCover(title, author, voiceName(voice));
+  const bytes = await writer.finish({ chapters: marks, title, author: author || `Read by ${voiceName(voice)}`, cover });
+  writer.terminate();
+  const elapsed = (performance.now() - t0) / 1000;
+  lastSpeed = marks.at(-1).end / elapsed;
+  pref.set("lastSpeed", lastSpeed);
+  const totalWords = chapters.reduce((n, c) => n + words(speakable(c.text)), 0);
+  const overhead = marks.length * (announce ? 4 : 1.5);
+  if (totalWords > 200) { secPerWord = Math.max(0.3, Math.min(0.8, ((marks.at(-1).end * speed) - overhead) / totalWords)); pref.set("secPerWord", secPerWord); }
+
+  const blob = new Blob([bytes], { type: "audio/mp4" });
+  const name = (title.replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 100) || "Audiobook") + ".m4b";
+  const a = $("#downloadBtn");
+  if (a.href) URL.revokeObjectURL(a.href);
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.textContent = "Download " + name;
+  $("#doneInfo").textContent = `${fmtDur(marks.at(-1).end)} · ${marks.length} chapter${marks.length === 1 ? "" : "s"} · ${fmtMB(blob.size)} · made in ${fmtMins(elapsed).replace("about ", "")}`;
+  endRun();
+  $("#doneCard").classList.remove("hidden");
+  $("#doneCard").scrollIntoView({ behavior: "smooth" });
+  a.click(); // start the download right away
+}
+
+function setRun(title, frac, status) {
+  $("#runTitle").textContent = title;
+  $("#runPct").textContent = Math.floor(frac * 100) + "%";
+  $("#bar").style.width = (frac * 100).toFixed(1) + "%";
+  $("#runStatus").textContent = status;
+  document.title = run ? `${Math.floor(frac * 100)}% · Audiobook Maker` : "Audiobook Maker";
+}
+function endRun() {
+  run = null;
+  document.title = "Audiobook Maker";
+  $("#makeRunning").classList.add("hidden");
+  $("#makeIdle").classList.remove("hidden");
+  updateEstimate();
+}
+function showError(msg) { $("#makeError").textContent = msg; }
+
+async function makeCover(title, author, voice) {
+  const S = 1400;
+  const c = new OffscreenCanvas(S, S), g = c.getContext("2d");
+  const grad = g.createLinearGradient(0, 0, S, S);
+  grad.addColorStop(0, "#d4561a"); grad.addColorStop(1, "#7c2d12");
+  g.fillStyle = grad; g.fillRect(0, 0, S, S);
+  g.fillStyle = "rgba(255,255,255,.12)";
+  [0.22, 0.42, 0.62, 0.42, 0.22].forEach((h, i) => g.fillRect(S * 0.3 + i * S * 0.09, S * 0.78 - S * h * 0.35, S * 0.05, S * h * 0.35));
+  g.fillStyle = "#fff6ee";
+  g.textBaseline = "top";
+  let size = 120;
+  const fit = () => {
+    g.font = `700 ${size}px Georgia, "Times New Roman", serif`;
+    const lines = [];
+    let line = "";
+    for (const word of title.split(/\s+/)) {
+      const t = line ? line + " " + word : word;
+      if (g.measureText(t).width > S * 0.8 && line) { lines.push(line); line = word; } else line = t;
+    }
+    if (line) lines.push(line);
+    return lines;
+  };
+  let lines = fit();
+  while ((lines.length > 5 || lines.some((l) => g.measureText(l).width > S * 0.8)) && size > 50) { size -= 8; lines = fit(); }
+  lines.forEach((l, i) => g.fillText(l, S * 0.1, S * 0.12 + i * size * 1.15));
+  g.font = `400 52px system-ui, "Segoe UI", sans-serif`;
+  g.fillStyle = "rgba(255,246,238,.85)";
+  g.fillText(author ? author : `Read by ${voice}`, S * 0.1, S * 0.12 + lines.length * size * 1.15 + 30);
+  const blob = await c.convertToBlob({ type: "image/jpeg", quality: 0.9 });
+  return new Uint8Array(await blob.arrayBuffer());
+}
+
+// Remove the old reader app's offline cache from earlier versions of this site.
+navigator.serviceWorker?.getRegistrations?.().then((rs) => rs.forEach((r) => r.unregister())).catch(() => {});
+
+window.__abm = { get chapters() { return chapters; }, get docs() { return docs; }, addDocs: (list) => { list.forEach((d) => docs.push({ id: nextId++, ...d })); docsChanged(); } };
