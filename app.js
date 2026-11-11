@@ -35,22 +35,56 @@ $("#announce").onchange = (e) => { pref.set("announce", e.target.checked); rende
 $("#author").oninput = (e) => pref.set("author", e.target.value);
 
 // ---------- input ----------
-let docs = []; // { id, name, text }
-let chapters = []; // { title, text }
+let docs = []; // { id, name, text } for text/Markdown input
+let book = null; // a PDF novel: { fileName, title, author, cover, skipped, stats }
+let chapters = []; // { title, text } for documents, or { title, label, heading, paragraphs, pages } for a PDF
 let nextId = 1;
 const TEXT_FILE = /\.(md|markdown|txt|text)$/i;
+const PDF_FILE = /\.pdf$/i;
 const natural = (a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
 
 async function addFiles(fileList) {
-  const files = [...fileList].filter((f) => TEXT_FILE.test(f.name) || f.type.startsWith("text/"));
-  const skipped = fileList.length - files.length;
+  const all = [...fileList];
+  const pdfs = all.filter((f) => PDF_FILE.test(f.name) || f.type === "application/pdf");
+  if (pdfs.length) {
+    if (pdfs.length > 1 || all.length > pdfs.length) showError("A PDF book is made into its own audiobook, so only the first PDF was added.");
+    else showError("");
+    return addPdf(pdfs[0]);
+  }
+  const files = all.filter((f) => TEXT_FILE.test(f.name) || f.type.startsWith("text/"));
+  const skipped = all.length - files.length;
   files.sort((a, b) => natural(a.webkitRelativePath || a.relPath || a.name, b.webkitRelativePath || b.relPath || b.name));
+  if (book && files.length) { book = null; titleEdited = false; }
   for (const f of files) docs.push({ id: nextId++, name: f.name, path: f.webkitRelativePath || f.relPath || f.name, text: await f.text() });
-  if (skipped > 0) showError(`Skipped ${skipped} file${skipped > 1 ? "s" : ""} that ${skipped > 1 ? "aren't" : "isn't"} .md or .txt.`);
+  if (skipped > 0) showError(`Skipped ${skipped} file${skipped > 1 ? "s" : ""} that ${skipped > 1 ? "aren't" : "isn't"} .md, .txt or .pdf.`);
   else showError("");
   docsChanged();
 }
 
+async function addPdf(file) {
+  if (run) return showError("Wait for the current audiobook to finish first.");
+  const status = $("#pdfStatus");
+  status.classList.remove("hidden");
+  status.textContent = `Opening ${file.name}…`;
+  try {
+    const { analyzePdf } = await import("./pdfbook.js");
+    const r = await analyzePdf(new Uint8Array(await file.arrayBuffer()), (frac, msg) => { status.textContent = `${msg}…`; });
+    docs = [];
+    book = { fileName: file.name, title: r.title || file.name.replace(/\.pdf$/i, ""), author: r.author, cover: r.cover, skipped: r.skipped, stats: r.stats };
+    chapters = r.chapters.map((c) => ({ title: c.name, label: c.label, heading: c.title, paragraphs: c.paragraphs, pages: c.pages }));
+    $("#bookTitle").value = book.title; titleEdited = false;
+    if (book.author) $("#author").value = book.author;
+    status.classList.add("hidden");
+    showError("");
+    showSections();
+    renderFiles();
+    renderChapters();
+  } catch (err) {
+    console.error(err);
+    status.classList.add("hidden");
+    showError(`Couldn't read ${file.name}: ${err.message}`);
+  }
+}
 // Folders dropped onto the page: walk them for text files.
 async function filesFromDrop(items) {
   const out = [];
@@ -93,6 +127,7 @@ $("#pasteAdd").onclick = () => {
   const text = $("#pasteText").value;
   if (!text.trim()) return;
   const n = docs.filter((d) => d.pasted).length + 1;
+  if (book) { book = null; titleEdited = false; }
   docs.push({ id: nextId++, name: $("#pasteName").value.trim() || `Pasted text ${n}`, text, pasted: true });
   $("#pasteText").value = ""; $("#pasteName").value = "";
   $("#pasteBox").classList.add("hidden");
@@ -100,6 +135,11 @@ $("#pasteAdd").onclick = () => {
 };
 
 function renderFiles() {
+  if (book) {
+    $("#files").innerHTML = `<span class="chip">📖 ${esc(book.fileName)} <span class="muted small">${book.stats.pages} pages · ${book.stats.words.toLocaleString()} words</span><button id="rmBook" aria-label="Remove ${esc(book.fileName)}">×</button></span>`;
+    $("#rmBook").onclick = () => { book = null; chapters = []; titleEdited = false; docsChanged(); };
+    return;
+  }
   $("#files").innerHTML = docs.map((d) => `<span class="chip" title="${esc(d.path || d.name)}">${esc(d.name)} <span class="muted small">${words(d.text).toLocaleString()} words</span><button data-rm="${d.id}" aria-label="Remove ${esc(d.name)}">×</button></span>`).join("")
     + (docs.length > 1 ? `<button class="btn ghost" id="clearAll" style="padding:3px 10px;font-size:13px">Remove all</button>` : "");
   document.querySelectorAll("[data-rm]").forEach((b) => (b.onclick = () => { docs = docs.filter((d) => d.id !== +b.dataset.rm); docsChanged(); }));
@@ -110,46 +150,103 @@ let titleEdited = false;
 $("#bookTitle").oninput = () => (titleEdited = true);
 $("#splitMode").onchange = () => { chapters = buildChapters(docs, $("#splitMode").value); renderChapters(); };
 
-function docsChanged() {
-  renderFiles();
-  chapters = buildChapters(docs, $("#splitMode").value);
-  if (!titleEdited || !$("#bookTitle").value.trim()) { $("#bookTitle").value = bookTitle(docs); titleEdited = false; }
+function showSections() {
   const has = chapters.length > 0;
   ["#chapterCard", "#voiceCard", "#makeCard"].forEach((s) => $(s).classList.toggle("hidden", !has));
+  $("#splitRow").classList.toggle("hidden", !!book);
+}
+
+function docsChanged() {
+  renderFiles();
+  if (!book) {
+    chapters = buildChapters(docs, $("#splitMode").value);
+    if (!titleEdited || !$("#bookTitle").value.trim()) { $("#bookTitle").value = bookTitle(docs); titleEdited = false; }
+  }
+  showSections();
   renderChapters();
 }
 
 // ---------- chapters ----------
-const speakable = (text) => toParagraphs(text, { markdown: true }).join("\n\n");
+// The text that will actually be spoken, as paragraphs. PDF chapters keep scene breaks as SCENE markers.
+const SCENE = "\u0000scene";
+function spokenParagraphs(c) {
+  if (c.paragraphs) return c.paragraphs.map((p) => (p === SCENE ? p : cleanNovel(p))).filter(Boolean);
+  return toParagraphs(c.text, { markdown: true });
+}
+function cleanNovel(p) {
+  p = p.replace(/[­﻿]/g, "")
+    .replace(/\.\s\.\s\./g, "…")          // ". . ." -> ellipsis
+    .replace(/_{2,}/g, "…")               // redaction blanks become a pause
+    .replace(/\s+([!?.,;:…”’)\]])/g, "$1") // stray spaces before punctuation
+    .replace(/\s+/g, " ").trim();
+  if (!p || !/[\p{L}\p{N}]/u.test(p)) return p === "…" ? "" : p;
+  return /[.!?:;…"”’)\]—]$/.test(p) ? p : p + ".";
+}
+const chapterWords = (c) => spokenParagraphs(c).reduce((n, p) => n + (p === SCENE ? 0 : words(p)), 0);
+const previewText = (c) => spokenParagraphs(c).map((p) => (p === SCENE ? "⁂" : p)).join("\n\n");
+const announcement = (c, i) => {
+  if (c.paragraphs) {
+    const label = (c.label || c.title || `Part ${i + 1}`).replace(/[.!?:;]*$/, "");
+    const heading = (c.heading || "").replace(/[.!?:;]*$/, "");
+    // If the reader renamed the chapter, read the new name.
+    const original = c.label && c.heading ? `${c.label}: ${c.heading}` : c.label || c.heading;
+    if (c.title !== original) return `${c.title.replace(/[.!?:;]*$/, "")}.`;
+    return heading ? `${label}. ${heading}.` : `${label}.`;
+  }
+  return `Chapter ${i + 1}. ${c.title.replace(/[.!?:;]*$/, "")}.`;
+};
 
 function renderChapters() {
   const list = $("#chapters");
+  const counts = chapters.map(chapterWords);
   list.innerHTML = chapters.map((c, i) => {
-    const w = words(speakable(c.text));
+    const w = counts[i];
+    const pages = c.pages ? `pp. ${c.pages[0]}–${c.pages[1]} · ` : "";
+    const preview = previewText(c);
     return `<li><div class="line">
       <span class="num">${i + 1}</span>
       <input type="text" class="grow" data-title="${i}" value="${esc(c.title)}" aria-label="Chapter ${i + 1} title">
-      <span class="meta">${w.toLocaleString()} words · ${fmtMins(w * secPerWord).replace("about ", "~")}</span>
+      <span class="meta">${pages}${w.toLocaleString()} words · ${fmtMins(w * secPerWord).replace("about ", "~")}</span>
       <button class="icon" data-up="${i}" title="Move up" ${i ? "" : "disabled"}>↑</button>
       <button class="icon" data-down="${i}" title="Move down" ${i < chapters.length - 1 ? "" : "disabled"}>↓</button>
       <button class="icon" data-merge="${i}" title="Merge into the chapter above" ${i ? "" : "disabled"}>⤒</button>
       <button class="icon" data-del="${i}" title="Remove chapter">×</button>
     </div>
-    <details><summary>What will be read</summary><pre>${esc(speakable(c.text).slice(0, 3000))}${speakable(c.text).length > 3000 ? "…" : ""}</pre></details></li>`;
+    <details><summary>What will be read</summary><pre>${esc(preview.slice(0, 4000))}${preview.length > 4000 ? "…" : ""}</pre></details></li>`;
   }).join("");
   list.querySelectorAll("[data-title]").forEach((el) => (el.oninput = () => (chapters[+el.dataset.title].title = el.value)));
   const move = (i, j) => { [chapters[i], chapters[j]] = [chapters[j], chapters[i]]; renderChapters(); };
   list.querySelectorAll("[data-up]").forEach((b) => (b.onclick = () => move(+b.dataset.up, +b.dataset.up - 1)));
   list.querySelectorAll("[data-down]").forEach((b) => (b.onclick = () => move(+b.dataset.down, +b.dataset.down + 1)));
   list.querySelectorAll("[data-merge]").forEach((b) => (b.onclick = () => {
-    const i = +b.dataset.merge;
-    chapters[i - 1].text += `\n\n## ${chapters[i].title}\n\n${chapters[i].text}`;
+    const i = +b.dataset.merge, a = chapters[i - 1], c = chapters[i];
+    if (a.paragraphs && c.paragraphs) {
+      a.paragraphs = [...a.paragraphs, SCENE, announcement(c, i), ...c.paragraphs];
+      a.pages = [a.pages[0], c.pages[1]];
+    } else if (!a.paragraphs && !c.paragraphs) {
+      a.text += `\n\n## ${c.title}\n\n${c.text}`;
+    }
     chapters.splice(i, 1); renderChapters();
   }));
-  list.querySelectorAll("[data-del]").forEach((b) => (b.onclick = () => { chapters.splice(+b.dataset.del, 1); renderChapters(); if (!chapters.length) docsChanged(); }));
-  const w = chapters.reduce((n, c) => n + words(speakable(c.text)), 0);
+  list.querySelectorAll("[data-del]").forEach((b) => (b.onclick = () => { chapters.splice(+b.dataset.del, 1); renderChapters(); if (!chapters.length) { book = null; docsChanged(); } }));
+  const w = counts.reduce((n, x) => n + x, 0);
   $("#total").innerHTML = `<strong>${chapters.length} chapter${chapters.length === 1 ? "" : "s"}</strong> · ${w.toLocaleString()} words · ${fmtMins(estimateSeconds())} of listening`;
+  renderSkipped();
   updateEstimate();
+}
+
+function renderSkipped() {
+  const box = $("#skipped");
+  if (!book) { box.classList.add("hidden"); return; }
+  const by = {};
+  for (const s of book.skipped) (by[s.reason] ||= []).push(s.page);
+  const plural = { "illustration": "illustrations", "chapter title page": "chapter title pages", "table of contents": "contents page", "blank": "blank pages", "front matter": "front-matter pages" };
+  const parts = Object.entries(by).map(([r, ps]) => `${ps.length} ${ps.length === 1 ? r : plural[r] || r} <span class="muted">(p. ${ps.join(", ")})</span>`);
+  const c = book.stats.contents;
+  box.innerHTML = `<div><strong>Skipped ${book.skipped.length} pages</strong> that aren't read aloud: ${parts.join("; ")}.</div>`
+    + (c && c.entries ? `<div style="margin-top:4px">${c.matches ? "✓ Chapters match the book's table of contents." : `The book's table of contents lists ${c.entries} entries; check the chapters above.`}</div>` : "")
+    + (book.stats.footnoteLines ? `<div style="margin-top:4px">Skipped ${book.stats.footnoteLines} lines of footnotes.</div>` : "");
+  box.classList.remove("hidden");
 }
 
 // ---------- speech engine pool ----------
@@ -261,7 +358,8 @@ $("#sampleBtn").onclick = async () => {
   try {
     const p = await getPool();
     btn.textContent = "Making…";
-    const first = chapters.length ? makeChunks(toParagraphs(chapters[0].text, { markdown: true }), 220)[0]?.text : "";
+    const firstPara = chapters.length ? spokenParagraphs(chapters[0]).find((p) => p !== SCENE && words(p) > 8) : "";
+    const first = firstPara ? makeChunks([firstPara], 220)[0]?.text : "";
     const text = first || `Hi, I'm ${voiceName($("#voice").value)}. This is how your audiobook will sound.`;
     const m = await p.synth(text, $("#voice").value, +$("#speed").value);
     audio.src = URL.createObjectURL(new Blob([wavBytes(toInt16(m.samples), m.rate)], { type: "audio/wav" }));
@@ -280,7 +378,7 @@ let lastSpeed = pref.get("lastSpeed", null); // seconds of audio per second of w
 let secPerWord = pref.get("secPerWord", 0.48);
 
 function estimateSeconds() {
-  const w = chapters.reduce((n, c) => n + words(speakable(c.text)), 0);
+  const w = chapters.reduce((n, c) => n + chapterWords(c), 0);
   return (w * secPerWord + chapters.length * ($("#announce").checked ? 4 : 1.5)) / (+$("#speed").value || 1);
 }
 
@@ -327,8 +425,15 @@ async function createBook() {
 
   // Plan every piece of speech up front.
   const plan = chapters.map((c, ci) => {
-    const pieces = makeChunks(toParagraphs(c.text, { markdown: true }), 250);
-    if (announce) pieces.unshift({ text: `Chapter ${ci + 1}. ${c.title.replace(/[.!?:;]*$/, "")}.`, pauseAfter: 0.9 });
+    const pieces = [];
+    for (const para of spokenParagraphs(c)) {
+      if (para === SCENE) { if (pieces.length) pieces[pieces.length - 1].pauseAfter = 1.6; continue; }
+      const chunks = makeChunks([para], 250);
+      // Novels have many short paragraphs (dialogue), so they get a shorter pause than documents.
+      if (c.paragraphs && chunks.length) chunks[chunks.length - 1].pauseAfter = 0.35;
+      pieces.push(...chunks);
+    }
+    if (announce && pieces.length) pieces.unshift({ text: cleanNovel(announcement(c, ci)), pauseAfter: 1.0 });
     return { title: c.title || `Chapter ${ci + 1}`, pieces };
   }).filter((c) => c.pieces.length);
   const flat = plan.flatMap((c, ci) => c.pieces.map((p, k) => ({ ...p, ci, last: k === c.pieces.length - 1 })));
@@ -340,6 +445,7 @@ async function createBook() {
   $("#makeRunning").classList.remove("hidden");
   setRun("Starting the speech engine…", 0, "");
 
+  keepAlive(true);
   const [p] = await Promise.all([getPool(), writer.load()]);
   if (run.stopped) return;
   const t0 = performance.now();
@@ -397,13 +503,13 @@ async function createBook() {
   }
 
   setRun("Packaging the audiobook…", 1, "Adding chapters and cover");
-  const cover = await makeCover(title, author, voiceName(voice));
+  const cover = book?.cover || (await makeCover(title, author, voiceName(voice)));
   const bytes = await writer.finish({ chapters: marks, title, author: author || `Read by ${voiceName(voice)}`, cover });
   writer.terminate();
   const elapsed = (performance.now() - t0) / 1000;
   lastSpeed = marks.at(-1).end / elapsed;
   pref.set("lastSpeed", lastSpeed);
-  const totalWords = chapters.reduce((n, c) => n + words(speakable(c.text)), 0);
+  const totalWords = chapters.reduce((n, c) => n + chapterWords(c), 0);
   const overhead = marks.length * (announce ? 4 : 1.5);
   if (totalWords > 200) { secPerWord = Math.max(0.3, Math.min(0.8, ((marks.at(-1).end * speed) - overhead) / totalWords)); pref.set("secPerWord", secPerWord); }
 
@@ -428,7 +534,23 @@ function setRun(title, frac, status) {
   $("#runStatus").textContent = status;
   document.title = run ? `${Math.floor(frac * 100)}% · Audiobook Maker` : "Audiobook Maker";
 }
+// While a book is being made: hold a Web Lock (browsers avoid freezing tabs that hold one) and,
+// while the tab is visible, a screen wake lock so the computer doesn't go to sleep.
+let lockRelease = null, wakeLock = null;
+async function keepAlive(on) {
+  if (on) {
+    if (!lockRelease && navigator.locks) navigator.locks.request("audiobook-maker-run", () => new Promise((r) => (lockRelease = r))).catch(() => {});
+    try { if (!wakeLock && document.visibilityState === "visible") wakeLock = await navigator.wakeLock?.request("screen"); wakeLock?.addEventListener?.("release", () => (wakeLock = null)); } catch {}
+  } else {
+    lockRelease?.(); lockRelease = null;
+    try { await wakeLock?.release(); } catch {}
+    wakeLock = null;
+  }
+}
+document.addEventListener("visibilitychange", () => { if (run && document.visibilityState === "visible") keepAlive(true); });
+
 function endRun() {
+  keepAlive(false);
   run = null;
   document.title = "Audiobook Maker";
   $("#makeRunning").classList.add("hidden");

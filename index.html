@@ -56,7 +56,7 @@
     .chapters .line { display: flex; gap: 8px; align-items: center; }
     .chapters .num { width: 28px; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; flex: none; }
     .chapters input[type=text] { padding: 6px 9px; }
-    .chapters .meta { font-size: 13px; color: var(--muted); white-space: nowrap; width: 150px; text-align: right; }
+    .chapters .meta { font-size: 13px; color: var(--muted); white-space: nowrap; min-width: 150px; text-align: right; padding: 0 4px; }
     .chapters details { margin: 4px 0 0 36px; }
     .chapters summary { cursor: pointer; color: var(--muted); font-size: 13px; }
     .chapters pre { white-space: pre-wrap; font: 13.5px/1.5 system-ui, sans-serif; color: var(--muted); max-height: 220px; overflow: auto; margin: 6px 0 0; background: var(--bg); padding: 10px; border-radius: 8px; }
@@ -77,24 +77,25 @@
 <body>
 <div class="wrap">
   <h1>Audiobook Maker</h1>
-  <div class="muted">Turn documentation into an <strong>.m4b audiobook</strong> with chapters, using natural Kokoro voices. Everything runs in this browser; your text isn't uploaded or saved.</div>
+  <div class="muted">Turn documentation or a novel PDF into an <strong>.m4b audiobook</strong> with chapters, using natural Kokoro voices. Everything runs in this browser; your text isn't uploaded or saved.</div>
 
   <section class="card" id="inputCard">
-    <h2><span class="n">1</span> Add documentation</h2>
+    <h2><span class="n">1</span> Add documentation or a book</h2>
     <div class="drop" id="drop">
-      <p>Drop <strong>.md</strong> or <strong>.txt</strong> files or a whole folder here</p>
+      <p>Drop <strong>.md</strong> or <strong>.txt</strong> files, a whole folder, or a novel as a <strong>.pdf</strong> here</p>
       <div class="row" style="justify-content:center">
         <button class="btn" id="pickFiles">Choose files…</button>
         <button class="btn" id="pickFolder">Choose folder…</button>
         <button class="btn ghost" id="pasteToggle">Paste text</button>
       </div>
-      <input type="file" id="fileInput" multiple accept=".md,.markdown,.txt,.text,text/plain,text/markdown" class="hidden">
+      <input type="file" id="fileInput" multiple accept=".md,.markdown,.txt,.text,.pdf,text/plain,text/markdown,application/pdf" class="hidden">
       <input type="file" id="folderInput" webkitdirectory multiple class="hidden">
     </div>
     <div id="pasteBox" class="hidden" style="margin-top:12px">
       <textarea id="pasteText" placeholder="Paste text or Markdown…"></textarea>
       <div class="row" style="margin-top:8px"><input type="text" id="pasteName" placeholder="Name (optional)" style="max-width:280px"><button class="btn primary" id="pasteAdd">Add</button></div>
     </div>
+    <div class="status hidden" id="pdfStatus" style="margin-top:12px"></div>
     <div class="files" id="files"></div>
   </section>
 
@@ -104,7 +105,7 @@
       <div><label class="f" for="bookTitle">Book title</label><input type="text" id="bookTitle"></div>
       <div><label class="f" for="author">Author (optional)</label><input type="text" id="author"></div>
     </div>
-    <div class="row" style="margin-top:12px">
+    <div class="row" style="margin-top:12px" id="splitRow">
       <label class="f" for="splitMode" style="margin:0">Split into chapters:</label>
       <select id="splitMode" style="width:auto">
         <option value="auto">Automatically</option>
@@ -114,6 +115,7 @@
     </div>
     <ul class="chapters" id="chapters"></ul>
     <div class="total" id="total"></div>
+    <div class="small hidden" id="skipped" style="margin-top:10px; padding:10px 12px; background:var(--bg); border-radius:10px"></div>
   </section>
 
   <section class="card hidden" id="voiceCard">
@@ -149,7 +151,7 @@
       <div class="progress" style="margin:10px 0"><div id="bar"></div></div>
       <div class="status" id="runStatus"></div>
       <div class="row" style="margin-top:12px"><button class="btn ghost" id="stopBtn">Stop</button>
-        <span class="status small">Keep this tab open. It can be in the background.</span></div>
+        <span class="status small">Keep this tab open and the computer awake. The tab can be in the background.</span></div>
     </div>
     <div class="error" id="makeError"></div>
   </section>
