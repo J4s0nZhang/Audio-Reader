@@ -13,7 +13,7 @@ Turns documentation (Markdown or plain text) or a **novel PDF** into an **.m4b a
 
 The speech engine uses your graphics card through WebGPU when available, which is much faster. Otherwise it uses several processor threads. The first run downloads the voice model (about 330 MB for the graphics card, 90 MB for the processor), and the browser caches it after that.
 
-## Novel PDFs
+## PDFs
 
 Drop a PDF and the page reads its layout to work out what to read:
 
